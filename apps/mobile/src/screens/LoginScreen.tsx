@@ -21,6 +21,7 @@ export function LoginScreen() {
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -150,21 +151,39 @@ export function LoginScreen() {
             autoCorrect={false}
           />
           <Text style={[common.metricLabel, { marginTop: spacing.sm }]}>Password</Text>
-          <TextInput
-            value={password}
-            onChangeText={setPassword}
-            secureTextEntry
-            style={input}
-            placeholderTextColor={colors.muted}
-            placeholder="Min 6 characters"
-            returnKeyType="done"
-            onSubmitEditing={() =>
-              void run(async () => {
-                if (mode === 'login') await login(email.trim(), password);
-                else await register(name.trim(), email.trim(), password);
-              })
-            }
-          />
+          <View style={passwordWrap}>
+            <TextInput
+              value={password}
+              onChangeText={setPassword}
+              secureTextEntry={!showPassword}
+              style={[input, passwordInput]}
+              placeholderTextColor={colors.muted}
+              placeholder="Min 6 characters"
+              returnKeyType="done"
+              autoCorrect={false}
+              autoCapitalize="none"
+              textContentType="password"
+              onSubmitEditing={() =>
+                void run(async () => {
+                  if (mode === 'login') await login(email.trim(), password);
+                  else await register(name.trim(), email.trim(), password);
+                })
+              }
+            />
+            <Pressable
+              onPress={() => setShowPassword((v) => !v)}
+              hitSlop={8}
+              style={eyeBtn}
+              accessibilityRole="button"
+              accessibilityLabel={showPassword ? 'Hide password' : 'Show password'}
+            >
+              <Ionicons
+                name={showPassword ? 'eye-off-outline' : 'eye-outline'}
+                size={22}
+                color={colors.muted}
+              />
+            </Pressable>
+          </View>
 
           <Pressable
             style={[common.primaryBtn, { marginTop: spacing.md }]}
@@ -212,6 +231,24 @@ const input = {
   marginTop: 4,
   fontSize: 16,
 } as const;
+
+const passwordWrap = {
+  position: 'relative' as const,
+  marginTop: 4,
+};
+
+const passwordInput = {
+  marginTop: 0,
+  paddingRight: 44,
+} as const;
+
+const eyeBtn = {
+  position: 'absolute' as const,
+  right: 10,
+  top: 0,
+  bottom: 0,
+  justifyContent: 'center' as const,
+};
 
 const socialBtn = {
   flexDirection: 'row' as const,
