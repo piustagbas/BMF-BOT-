@@ -17,6 +17,9 @@
     "db:push": "echo \"mongoose — no schema push needed\"",
     "redis:start": "node scripts/start-redis.mjs"
   },
+  "pnpm": {
+    "neverBuiltDependencies": ["redis-memory-server"]
+  },
   "devDependencies": {
     "redis-memory-server": "^0.17.1",
     "turbo": "^2.3.3",

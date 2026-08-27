@@ -5,6 +5,8 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml turbo.json ./
 COPY apps/api/package.json apps/api/
 COPY apps/mobile/package.json apps/mobile/
 COPY packages ./packages
+# redis-memory-server is a local-dev helper; skip compiling Redis in Docker.
+ENV REDISMS_DISABLE_POSTINSTALL=true
 RUN pnpm install --frozen-lockfile
 COPY . .
 RUN pnpm --filter @memecoinbot/api... build
