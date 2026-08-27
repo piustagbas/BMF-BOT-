@@ -1,15 +1,12 @@
 FROM node:20-bookworm-slim AS build
 WORKDIR /app
 RUN corepack enable && corepack prepare pnpm@9.15.0 --activate
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml turbo.json ./
-COPY apps/api/package.json apps/api/
-COPY apps/mobile/package.json apps/mobile/
-COPY packages ./packages
 # redis-memory-server is a local-dev helper; skip compiling Redis in Docker.
 ENV REDISMS_DISABLE_POSTINSTALL=true
-RUN pnpm install --frozen-lockfile
+# Copy the full tree before install so pnpm workspace links are not wiped by a later COPY.
 COPY . .
-RUN pnpm --filter @memecoinbot/api... build
+RUN pnpm install --frozen-lockfile
+RUN pnpm exec turbo run build --filter=@memecoinbot/api...
 
 FROM node:20-bookworm-slim
 WORKDIR /app
