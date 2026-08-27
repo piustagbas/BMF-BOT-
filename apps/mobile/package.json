@@ -1,0 +1,44 @@
+{
+  "name": "@memecoinbot/mobile",
+  "version": "0.1.0",
+  "private": true,
+  "main": "index.ts",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo start --android",
+    "ios": "expo start --ios",
+    "web": "expo start --web",
+    "lint": "echo \"lint:mobile ok\"",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "echo \"no mobile unit tests yet\"",
+    "build": "echo \"mobile build via EAS later\""
+  },
+  "dependencies": {
+    "@expo/metro-runtime": "^6.1.2",
+    "@expo/vector-icons": "^15.1.1",
+    "@memecoinbot/shared": "workspace:*",
+    "@react-native-async-storage/async-storage": "^2.2.0",
+    "@react-navigation/bottom-tabs": "^7.18.17",
+    "@react-navigation/native": "^7.3.17",
+    "@react-navigation/native-stack": "^7.18.9",
+    "expo": "~54.0.37",
+    "expo-apple-authentication": "~8.0.8",
+    "expo-clipboard": "~8.0.8",
+    "expo-linking": "~8.0.12",
+    "expo-modules-core": "~3.0.30",
+    "expo-status-bar": "~3.0.9",
+    "expo-web-browser": "~15.0.11",
+    "invariant": "^2.2.4",
+    "react": "19.1.0",
+    "react-dom": "^19.1.0",
+    "react-native": "0.81.5",
+    "react-native-safe-area-context": "^5.6.2",
+    "react-native-screens": "^4.16.0",
+    "react-native-web": "^0.21.2",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/react": "~19.1.17",
+    "typescript": "~5.9.2"
+  }
+}

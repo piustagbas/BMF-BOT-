@@ -1,0 +1,424 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum TradingMode {
+  SIGNAL_ONLY
+  PAPER
+  MANUAL_REAL
+  AUTO
+}
+
+enum SignalType {
+  WATCH
+  SETUP_FORMING
+  BUY
+  HOLD
+  TAKE_PROFIT
+  SELL
+  STOP_LOSS
+  EMERGENCY_EXIT
+  NO_TRADE
+}
+
+enum HolderRiskLevel {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum WhaleActivity {
+  ACCUMULATION
+  NEUTRAL
+  DISTRIBUTION
+  SUSPICIOUS
+}
+
+enum HealthStatus {
+  ONLINE
+  DEGRADED
+  OFFLINE
+}
+
+enum PositionStatus {
+  OPEN
+  PARTIAL
+  CLOSED
+}
+
+enum ExitReason {
+  TP1
+  TP2
+  TP3
+  TRAILING_STOP
+  STOP_LOSS
+  MANUAL
+  INVALIDATED
+  EMERGENCY
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  displayName  String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  riskSettings         RiskSettings?
+  autoTradingSettings  AutoTradingSettings?
+  watchlist            WatchlistItem[]
+  signals              Signal[]
+  paperTrades          PaperTrade[]
+  paperPositions       PaperPosition[]
+  trades               Trade[]
+  positions            Position[]
+  notifications        Notification[]
+  backtests            Backtest[]
+  systemLogs           SystemLog[]
+}
+
+model Token {
+  id          String   @id @default(cuid())
+  address     String   @unique
+  name        String
+  symbol      String
+  decimals    Int?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  marketData       MarketData[]
+  safetyAnalyses   SafetyAnalysis[]
+  signals          Signal[]
+  paperTrades      PaperTrade[]
+  paperPositions   PaperPosition[]
+  trades           Trade[]
+  positions        Position[]
+  watchlistItems   WatchlistItem[]
+}
+
+model MarketData {
+  id             String   @id @default(cuid())
+  tokenId        String
+  source         String
+  priceUsd       Float?
+  marketCap      Float?
+  fdv            Float?
+  liquidityUsd   Float?
+  volume24h      Float?
+  priceChange24h Float?
+  buys24h        Int?
+  sells24h       Int?
+  pairAgeHours   Float?
+  dexId          String?
+  pairAddress    String?
+  rawJson        Json?
+  fetchedAt      DateTime @default(now())
+
+  token Token @relation(fields: [tokenId], references: [id], onDelete: Cascade)
+
+  @@index([tokenId, fetchedAt])
+  @@index([source, fetchedAt])
+}
+
+model SafetyAnalysis {
+  id                   String          @id @default(cuid())
+  tokenId              String
+  safetyScore          Float
+  mintAuthorityRevoked Boolean?
+  freezeAuthorityRevoked Boolean?
+  holderCount          Int?
+  top10Pct             Float?
+  top20Pct             Float?
+  holderRisk           HolderRiskLevel?
+  whaleActivity        WhaleActivity?
+  criticalWarning      Boolean         @default(false)
+  criticalReason       String?
+  breakdownJson        Json?
+  analyzedAt           DateTime        @default(now())
+
+  token Token @relation(fields: [tokenId], references: [id], onDelete: Cascade)
+
+  @@index([tokenId, analyzedAt])
+}
+
+model Strategy {
+  id          String   @id @default(cuid())
+  strategyKey String   @unique
+  name        String
+  description String?
+  configJson  Json?
+  enabled     Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  signals     Signal[]
+  paperTrades PaperTrade[]
+  trades      Trade[]
+  backtests   Backtest[]
+}
+
+model Signal {
+  id              String     @id @default(cuid())
+  userId          String?
+  tokenId         String
+  strategyId      String?
+  signalType      SignalType
+  safetyScore     Float?
+  signalScore     Float?
+  axiomScore      Float?
+  entryPrice      Float?
+  idealEntry      Float?
+  entryMin        Float?
+  entryMax        Float?
+  invalidation    Float?
+  stopLoss        Float?
+  tp1Price        Float?
+  tp2Price        Float?
+  riskReward      Float?
+  reason          String?
+  beginnerExplain Json?
+  marketConditions Json?
+  traded          Boolean    @default(false)
+  createdAt       DateTime   @default(now())
+
+  user     User?     @relation(fields: [userId], references: [id])
+  token    Token     @relation(fields: [tokenId], references: [id], onDelete: Cascade)
+  strategy Strategy? @relation(fields: [strategyId], references: [id])
+  outcome  SignalOutcome?
+
+  @@index([createdAt])
+  @@index([signalType, createdAt])
+  @@index([tokenId, createdAt])
+}
+
+model SignalOutcome {
+  id              String    @id @default(cuid())
+  signalId        String    @unique
+  tp1Hit          Boolean   @default(false)
+  tp2Hit          Boolean   @default(false)
+  slHit           Boolean   @default(false)
+  mfePct          Float?
+  maePct          Float?
+  timeToTargetSec Int?
+  timeToStopSec   Int?
+  closedAt        DateTime?
+  notes           String?
+
+  signal Signal @relation(fields: [signalId], references: [id], onDelete: Cascade)
+}
+
+model PaperTrade {
+  id             String      @id @default(cuid())
+  userId         String
+  tokenId        String
+  strategyId     String?
+  signalId       String?
+  status         PositionStatus @default(OPEN)
+  entryPrice     Float
+  exitPrice      Float?
+  stopLoss       Float
+  tp1Price       Float
+  tp2Price       Float
+  trailingStop   Float?
+  sizeUsd        Float
+  remainingPct   Float       @default(100)
+  feesUsd        Float       @default(0)
+  slippageUsd    Float       @default(0)
+  realizedPnlUsd Float       @default(0)
+  realizedPnlPct Float       @default(0)
+  entryReason    String?
+  exitReason     ExitReason?
+  safetyScore    Float?
+  signalScore    Float?
+  axiomScore     Float?
+  openedAt       DateTime    @default(now())
+  closedAt       DateTime?
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token    Token     @relation(fields: [tokenId], references: [id], onDelete: Cascade)
+  strategy Strategy? @relation(fields: [strategyId], references: [id])
+
+  @@index([userId, status])
+  @@index([openedAt])
+}
+
+model PaperPosition {
+  id           String         @id @default(cuid())
+  userId       String
+  tokenId      String
+  paperTradeId String?
+  status       PositionStatus @default(OPEN)
+  qtyRemaining Float
+  avgEntry     Float
+  stopLoss     Float
+  tp1Price     Float
+  tp2Price     Float
+  trailingStop Float?
+  unrealizedPnl Float         @default(0)
+  updatedAt    DateTime       @updatedAt
+  openedAt     DateTime       @default(now())
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token Token @relation(fields: [tokenId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status])
+}
+
+model Trade {
+  id             String         @id @default(cuid())
+  userId         String
+  tokenId        String
+  strategyId     String?
+  status         PositionStatus @default(OPEN)
+  entryPrice     Float
+  exitPrice      Float?
+  stopLoss       Float
+  tp1Price       Float
+  tp2Price       Float
+  sizeUsd        Float
+  realizedPnlUsd Float          @default(0)
+  txSignature    String?
+  isPaper        Boolean        @default(false)
+  openedAt       DateTime       @default(now())
+  closedAt       DateTime?
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token    Token     @relation(fields: [tokenId], references: [id], onDelete: Cascade)
+  strategy Strategy? @relation(fields: [strategyId], references: [id])
+
+  @@index([userId, openedAt])
+}
+
+model Position {
+  id           String         @id @default(cuid())
+  userId       String
+  tokenId      String
+  status       PositionStatus @default(OPEN)
+  qtyRemaining Float
+  avgEntry     Float
+  stopLoss     Float
+  updatedAt    DateTime       @updatedAt
+  openedAt     DateTime       @default(now())
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token Token @relation(fields: [tokenId], references: [id], onDelete: Cascade)
+}
+
+model WatchlistItem {
+  id        String   @id @default(cuid())
+  userId    String
+  tokenId   String
+  notes     String?
+  createdAt DateTime @default(now())
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token Token @relation(fields: [tokenId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, tokenId])
+}
+
+model RiskSettings {
+  id                              String   @id @default(cuid())
+  userId                          String   @unique
+  safetyMin                       Float    @default(80)
+  signalMin                       Float    @default(80)
+  minLiquidityUsd                 Float    @default(25000)
+  minRiskReward                   Float    @default(1.5)
+  riskPerTradePct                 Float    @default(1)
+  maxDailyLossPct                 Float    @default(5)
+  maxOpenPositions                Int      @default(5)
+  maxDailyTrades                  Int      @default(20)
+  maxPositionPct                  Float    @default(20)
+  maxExposurePct                  Float    @default(50)
+  maxConsecutiveLosses            Int      @default(3)
+  cooldownAfterLosingStreakMinutes Int     @default(60)
+  tp1Pct                          Float    @default(30)
+  tp1SellPct                      Float    @default(30)
+  tp2Pct                          Float    @default(60)
+  tp2SellPct                      Float    @default(40)
+  remainingPct                    Float    @default(30)
+  trailingMethod                  String   @default("ATR")
+  trailingAtrMult                 Float    @default(2)
+  trailingPct                     Float?
+  axiomRequiredForAutoTrading     Boolean  @default(true)
+  paperBalance                    Float    @default(1000)
+  safetyWeightsJson               Json?
+  signalWeightsJson               Json?
+  updatedAt                       DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model AutoTradingSettings {
+  id                  String      @id @default(cuid())
+  userId              String      @unique
+  tradingMode         TradingMode @default(SIGNAL_ONLY)
+  autoTradingEnabled  Boolean     @default(false)
+  killSwitch          Boolean     @default(true)
+  emergencyStop       Boolean     @default(false)
+  closePositionsOnEmergency Boolean @default(false)
+  updatedAt           DateTime    @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  channel   String
+  title     String
+  body      String
+  payload   Json?
+  sentAt    DateTime @default(now())
+  readAt    DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, sentAt])
+}
+
+model Backtest {
+  id           String   @id @default(cuid())
+  userId       String
+  strategyId   String?
+  name         String
+  configJson   Json
+  resultJson   Json?
+  status       String   @default("PENDING")
+  startedAt    DateTime @default(now())
+  finishedAt   DateTime?
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  strategy Strategy? @relation(fields: [strategyId], references: [id])
+}
+
+model DataSourceStatus {
+  id           String       @id @default(cuid())
+  sourceKey    String       @unique
+  status       HealthStatus @default(OFFLINE)
+  message      String?
+  lastSuccessAt DateTime?
+  lastCheckedAt DateTime    @default(now())
+  updatedAt    DateTime     @updatedAt
+}
+
+model SystemLog {
+  id        String   @id @default(cuid())
+  userId    String?
+  level     String
+  category  String
+  message   String
+  metaJson  Json?
+  createdAt DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id])
+
+  @@index([category, createdAt])
+}

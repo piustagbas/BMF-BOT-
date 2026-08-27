@@ -1,0 +1,34 @@
+services:
+  - type: web
+    name: bmf-bot-api
+    runtime: docker
+    plan: free
+    region: oregon
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: MONGODB_URI
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_EXPIRES_IN
+        value: 7d
+      - key: DEFAULT_TRADING_MODE
+        value: SIGNAL_ONLY
+      - key: AUTO_TRADING_ENABLED
+        value: "false"
+      - key: KILL_SWITCH
+        value: "true"
+      - key: AXIOM_REQUIRED_FOR_AUTO_TRADING
+        value: "true"
+      - key: REAL_TRADING_BROADCAST
+        value: "false"
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+      - key: SERVER_URL
+        sync: false

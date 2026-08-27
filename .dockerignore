@@ -1,0 +1,17 @@
+node_modules
+**/node_modules
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+.expo
+**/.expo
+dist
+**/dist
+.turbo
+apps/mobile/android
+apps/mobile/ios
+*.log
+.DS_Store
+README.md

@@ -1,0 +1,44 @@
+# Dependencies
+node_modules
+.pnpm-store
+
+# Build
+dist
+build
+.turbo
+.next
+.expo
+android
+ios
+web-build
+
+# Env / secrets
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Logs / OS
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea
+.vscode/*
+!.vscode/extensions.json
+
+# Test / coverage
+coverage
+*.lcov
+
+# Prisma
+packages/db/prisma/*.db
+packages/db/prisma/*.db-journal
+
+# Keys — never commit
+*.pem
+*.key
+wallet.json
+id.json

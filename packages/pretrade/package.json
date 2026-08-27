@@ -1,0 +1,21 @@
+{
+  "name": "@memecoinbot/pretrade",
+  "version": "0.1.0",
+  "private": true,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "echo \"lint:pretrade ok\"",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@memecoinbot/risk": "workspace:*",
+    "@memecoinbot/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}
