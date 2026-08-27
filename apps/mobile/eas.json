@@ -8,7 +8,8 @@
     "preview": {
       "distribution": "internal",
       "android": {
-        "buildType": "apk"
+        "buildType": "apk",
+        "credentialsSource": "local"
       },
       "node": "20.19.0",
       "pnpm": "9.15.0",
