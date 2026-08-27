@@ -2,6 +2,7 @@
   "expo": {
     "name": "BMF Bot",
     "slug": "memecoinbot",
+    "owner": "bldlne",
     "version": "0.1.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -29,6 +30,13 @@
     "web": {
       "favicon": "./assets/favicon.png"
     },
-    "plugins": ["expo-apple-authentication"]
+    "plugins": [
+      "expo-apple-authentication"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "8e54c879-a9bc-4c8c-93fe-9c7d35238884"
+      }
+    }
   }
 }

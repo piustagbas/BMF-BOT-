@@ -1,7 +1,8 @@
 {
   "cli": {
     "version": ">= 16.0.0",
-    "appVersionSource": "remote"
+    "appVersionSource": "local",
+    "promptToConfigurePushNotifications": false
   },
   "build": {
     "preview": {
@@ -9,6 +10,8 @@
       "android": {
         "buildType": "apk"
       },
+      "node": "20.19.0",
+      "pnpm": "9.15.0",
       "env": {
         "EXPO_PUBLIC_API_URL": "https://bmf-bot-api.onrender.com/api"
       }
