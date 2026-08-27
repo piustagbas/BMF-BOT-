@@ -9,6 +9,8 @@ node_modules
 **/.expo
 dist
 **/dist
+*.tsbuildinfo
+**/*.tsbuildinfo
 .turbo
 apps/mobile/android
 apps/mobile/ios

@@ -6,6 +6,8 @@ ENV REDISMS_DISABLE_POSTINSTALL=true
 # Copy the full tree before install so pnpm workspace links are not wiped by a later COPY.
 COPY . .
 RUN pnpm install --frozen-lockfile
+# Committed incremental caches skip emit when dist/ is missing.
+RUN find /app -name '*.tsbuildinfo' -delete
 RUN pnpm exec turbo run build --filter=@memecoinbot/api...
 
 FROM node:20-bookworm-slim
