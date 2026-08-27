@@ -46,32 +46,48 @@ function friendlyHttpError(status: number, text: string): string {
   return `Request failed (${status})`;
 }
 
-async function apiFetch(input: string, init?: RequestInit, timeoutMs = 20000): Promise<Response> {
+async function delay(ms: number) {
+  await new Promise((r) => setTimeout(r, ms));
+}
+
+async function apiFetch(input: string, init?: RequestInit, timeoutMs = 45000): Promise<Response> {
   const headers = new Headers(init?.headers);
   headers.set('ngrok-skip-browser-warning', '1');
+  headers.set('Accept', 'application/json');
   if (authToken) {
     headers.set('Authorization', `Bearer ${authToken}`);
   }
   if (init?.body && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json');
   }
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await fetch(input, { ...init, headers, signal: controller.signal });
-  } catch (err) {
-    const aborted =
-      (err instanceof Error && (err.name === 'AbortError' || /abort/i.test(err.message))) ||
-      false;
-    throw new ApiError(
-      aborted
-        ? 'Server took too long. Pull to refresh.'
-        : 'Cannot reach the server. Check your connection and that the API is running.',
-      aborted ? 408 : 0,
-    );
-  } finally {
-    clearTimeout(timer);
+
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      return await fetch(input, { ...init, headers, signal: controller.signal });
+    } catch (err) {
+      lastErr = err;
+      const aborted =
+        (err instanceof Error && (err.name === 'AbortError' || /abort/i.test(err.message))) ||
+        false;
+      if (aborted || attempt === 2) {
+        throw new ApiError(
+          aborted
+            ? 'Server took too long. Pull to refresh.'
+            : 'Cannot reach the server. Check your connection and that the API is running.',
+          aborted ? 408 : 0,
+        );
+      }
+      await delay(1500 * (attempt + 1));
+    } finally {
+      clearTimeout(timer);
+    }
   }
+  throw lastErr instanceof Error
+    ? lastErr
+    : new ApiError('Cannot reach the server. Check your connection and that the API is running.', 0);
 }
 
 async function readError(res: Response): Promise<string> {

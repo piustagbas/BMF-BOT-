@@ -3,7 +3,7 @@
     "name": "BMF Bot",
     "slug": "memecoinbot",
     "owner": "judecowart1",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "scheme": "memecoinbot",
@@ -25,15 +25,18 @@
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
-      "package": "com.memecoinbot.app"
+      "package": "com.memecoinbot.app",
+      "permissions": ["INTERNET", "ACCESS_NETWORK_STATE"]
     },
     "web": {
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
-      "expo-apple-authentication"
+      "expo-apple-authentication",
+      "./plugins/withAndroidHttp1.js"
     ],
     "extra": {
+      "apiUrl": "https://bmf-bot-api.onrender.com/api",
       "eas": {
         "projectId": "27ac3cc8-cdbd-43c0-bed8-c104de59c22b"
       }
