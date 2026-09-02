@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Pressable,
@@ -26,16 +26,26 @@ import { TokenRow } from '../components/TokenRow';
 import { colors, common, formatPct, formatUsd, spacing } from '../theme';
 import type { RootStackParamList } from '../navigation/types';
 import { HEALTH_SOURCE_CODE, buildTokenSourceTags } from '../utils/sourceTags';
+import { useMemecoinAutoTrade } from '../settings/MemecoinAutoTradeContext';
 
 export function DashboardScreen() {
   const navigation =
     useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+  const openToken = (tokenAddress: string) => {
+    const rootNavigation =
+      navigation.getParent<NativeStackNavigationProp<RootStackParamList>>();
+    (rootNavigation ?? navigation).navigate('TokenDetails', {
+      address: tokenAddress,
+    });
+  };
   const [health, setHealth] = useState<HealthPayload | null>(null);
   const [auto, setAuto] = useState<AutoTradingStatus | null>(null);
   const [paper, setPaper] = useState<PaperDashboard | null>(null);
   const [signals, setSignals] = useState<SignalItem[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const { addresses: autoTradeAddresses, toggle: toggleAutoTrade } =
+    useMemecoinAutoTrade();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -45,7 +55,7 @@ export function DashboardScreen() {
         fetchHealth(),
         fetchAutoTradingStatus(),
         fetchPaperDashboard().catch(() => null),
-        fetchSignals({ limit: 5 }).catch(() => ({ items: [] as SignalItem[] })),
+        fetchSignals({ limit: 12 }).catch(() => ({ items: [] as SignalItem[] })),
       ]);
       setHealth(h);
       setAuto(a);
@@ -66,6 +76,17 @@ export function DashboardScreen() {
 
   const perf = paper?.performance;
   const topSetups = signals.filter((s) => s.signalType === 'BUY' || s.signalType === 'WATCH');
+  const displayedSignals = useMemo(() => {
+    const source = topSetups.length >= 10 ? topSetups : signals;
+    const seen = new Set<string>();
+    return source
+      .filter((item) => {
+        if (seen.has(item.token.address)) return false;
+        seen.add(item.token.address);
+        return true;
+      })
+      .slice(0, 10);
+  }, [signals, topSetups]);
 
   return (
     <ScrollView
@@ -109,8 +130,12 @@ export function DashboardScreen() {
               }
             />
             <StatusBadge
-              label={auto?.label ?? 'AUTO OFF'}
-              tone={auto?.autoTradingEnabled ? 'danger' : 'ok'}
+              label={autoTradeAddresses.length > 0 ? 'MEME AUTO ON' : 'MEME AUTO OFF'}
+              tone={autoTradeAddresses.length > 0 ? 'warn' : 'ok'}
+            />
+            <StatusBadge
+              label={auto?.autoTradeForex ? 'FX AUTO ON' : 'FX AUTO OFF'}
+              tone={auto?.autoTradeForex ? 'warn' : 'ok'}
             />
           </View>
           <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
@@ -125,7 +150,7 @@ export function DashboardScreen() {
 
       {perf ? (
         <View style={common.card}>
-          <Text style={common.cardTitle}>Paper desk</Text>
+          <Text style={common.cardTitle}>Demo desk</Text>
           <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 16, marginTop: 8 }}>
             <View style={{ minWidth: '40%' }}>
               <Text style={common.metricLabel}>Equity</Text>
@@ -156,15 +181,17 @@ export function DashboardScreen() {
 
       <View style={common.card}>
         <View style={common.row}>
-          <Text style={common.cardTitle}>Recent setups</Text>
-          <Text style={{ color: colors.muted, fontSize: 12 }}>{signals.length} signals</Text>
+        <Text style={common.cardTitle}>Recent signals</Text>
+          <Text style={{ color: colors.muted, fontSize: 12 }}>
+            {displayedSignals.length} coins
+          </Text>
         </View>
-        {topSetups.length === 0 && signals.length === 0 ? (
+        {displayedSignals.length === 0 ? (
           <Text style={common.cardBody}>
             No recent signals yet. Open Signals and run a live scan.
           </Text>
         ) : (
-          (topSetups.length ? topSetups : signals).slice(0, 4).map((item) => (
+          displayedSignals.map((item) => (
             <View key={`${item.token.address}-${item.generatedAt}`} style={{ marginTop: spacing.sm }}>
               <TokenRow
                 symbol={item.token.symbol}
@@ -183,11 +210,11 @@ export function DashboardScreen() {
                   axiomUnavailable: item.axiomUnavailable,
                   safetyScore: item.safetyScore,
                 })}
-                onPress={() =>
-                  navigation.navigate('TokenDetails', {
-                    address: item.token.address,
-                  })
-                }
+                onPress={() => openToken(item.token.address)}
+                autoTrade={autoTradeAddresses.includes(item.token.address)}
+                onToggleAuto={(v) => {
+                  void toggleAutoTrade(item.token.address, v).catch(() => undefined);
+                }}
               />
             </View>
           ))

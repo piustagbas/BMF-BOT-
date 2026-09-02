@@ -1,4 +1,5 @@
-import { ema, rsi } from '@memecoinbot/indicators';
+import { analyzeCandlestickStructure, ema, rsi, type CandlestickStructure } from '@memecoinbot/indicators';
+import type { WhyNotBuyItem, WhyNotBuyPanel } from '@memecoinbot/scoring';
 import {
   DEFAULT_FOREX_RISK,
   type CalibratedConfidence,
@@ -143,6 +144,8 @@ export function analyzePair(
   const side: FxSide | null = bias === 'WAIT' ? null : bias;
   const structure = structureScore(candles, side);
   if (structure.note) reasons.push(structure.note);
+  const candleStruct = analyzeCandlestickStructure(candles);
+  if (candleStruct.notes[0]) reasons.push(`Candles: ${candleStruct.notes.join(', ')}`);
 
   let zone: EntryZone | null = null;
   let stopLoss: number | null = null;
@@ -200,9 +203,6 @@ export function analyzePair(
   const setupQuality = breakdown.total;
   if (setupQuality < DEFAULT_FOREX_RISK.minSetupQuality) {
     failed.push(`Setup quality ${setupQuality} below ${DEFAULT_FOREX_RISK.minSetupQuality}`);
-  }
-  if (quote.dataQuality !== 'LIVE') {
-    failed.push('Feed is not a live tick — paper fill still rechecks before execute');
   }
 
   return {
@@ -287,4 +287,233 @@ export function signalExpired(expiresAt: string, now = new Date()): boolean {
 export function dedupeKey(symbol: string, side: FxSide, zone: EntryZone, dayKey: string): string {
   const bucket = Math.round(zone.mid * 10_000);
   return `${symbol}|${side}|${bucket}|${dayKey}`;
+}
+
+function gate(
+  key: string,
+  label: string,
+  passed: boolean,
+  blocking: boolean,
+  value: string,
+  detail: string,
+  whyItMatters: string,
+  neutral = false,
+): WhyNotBuyItem {
+  return {
+    key,
+    label,
+    passed,
+    blocking,
+    status: neutral ? 'NEUTRAL' : passed ? 'PASS' : 'FAIL',
+    value,
+    detail,
+    whyItMatters,
+  };
+}
+
+export function buildFxWhyNotBuy(opts: {
+  analysis: AnalysisResult;
+  market: PairMarket;
+  candles: CandlestickStructure;
+  session: SessionSnapshot;
+  requestedSide?: FxSide | null;
+}): WhyNotBuyPanel {
+  const { analysis, market, candles, session } = opts;
+  const quote = market.quote;
+  const side = opts.requestedSide ?? analysis.side;
+  const feedOk = quote.dataQuality !== 'SYNTHETIC' && !quote.stale;
+  const sessionOk = analysis.filtersFailed.every(
+    (f) =>
+      !f.startsWith('Market closed') &&
+      !f.startsWith('Rollover') &&
+      !f.startsWith('Session-open') &&
+      !f.startsWith('Friday-close') &&
+      !f.startsWith('News blackout'),
+  );
+  const spreadOk = quote.spreadPips <= market.spec.maxSpreadPips;
+  const qualityOk = analysis.setupQuality >= DEFAULT_FOREX_RISK.minSetupQuality;
+  const rrOk = !analysis.side || analysis.riskReward1 >= DEFAULT_FOREX_RISK.minRiskReward;
+  const leanOk = analysis.side != null;
+  const sideOk = !side || !analysis.side || side === analysis.side;
+  const candleAgrees =
+    !side ||
+    (side === 'BUY' && candles.bullish) ||
+    (side === 'SELL' && !candles.bullish && candles.score <= 48);
+  const rsiAgrees =
+    analysis.rsi == null
+      ? false
+      : side === 'SELL'
+        ? analysis.rsi >= 45 && analysis.rsi <= 70
+        : analysis.rsi >= 30 && analysis.rsi <= 65;
+  const trendAgrees = analysis.breakdown.trend >= 16;
+  const structureAgrees = analysis.breakdown.structure >= 8;
+
+  const independent = [
+    gate(
+      'sig_trend',
+      'Trend (EMA)',
+      trendAgrees,
+      false,
+      `${analysis.breakdown.trend}/22`,
+      analysis.reasons.find((r) => r.includes('trend') || r.includes('EMA')) ?? 'EMA alignment',
+      'A buy needs the fast average above the slow average; a sell needs the opposite.',
+      analysis.breakdown.trend === 0,
+    ),
+    gate(
+      'sig_rsi',
+      'Momentum (RSI)',
+      rsiAgrees,
+      false,
+      analysis.rsi != null ? `RSI ${analysis.rsi.toFixed(0)}` : 'No RSI',
+      analysis.rsi == null
+        ? 'Need more candles for RSI'
+        : analysis.rsi > 70
+          ? 'Overbought — chasing longs is how late entries get trapped'
+          : analysis.rsi < 30
+            ? 'Oversold — chasing shorts is the same trap on the way down'
+            : 'RSI is not at an extreme',
+      'RSI is one independent read. Overbought/oversold is a reason not to chase, not a green light by itself.',
+      analysis.rsi == null,
+    ),
+    gate(
+      'sig_candlestick',
+      'Candlestick',
+      candleAgrees,
+      false,
+      `${candles.pattern.replace(/_/g, ' ')} · ${Math.round(candles.score)}/100`,
+      candles.notes.join(' · ') || 'No distinctive candle pattern',
+      'Same as memecoin: the last candles must support the side. A shooting star is a reason not to buy.',
+    ),
+    gate(
+      'sig_structure',
+      'Price structure',
+      structureAgrees,
+      false,
+      `${analysis.breakdown.structure}/12`,
+      analysis.reasons.find((r) => /higher-low|lower-high|break of|structure/i.test(r)) ??
+        'Structure is only a weak confirmation',
+      'Higher lows support longs. Lower highs support shorts. Mixed structure is a reason to wait.',
+    ),
+    gate(
+      'sig_session',
+      'Session',
+      session.forexOpen && !session.rollover && !session.fridayCloseProtect,
+      false,
+      session.name,
+      session.note,
+      'London/New York overlap is the liquid window. Weekend, rollover, and Friday close are reasons not to enter.',
+    ),
+  ];
+
+  const items: WhyNotBuyItem[] = [
+    gate(
+      'feed',
+      'Price feed',
+      feedOk,
+      true,
+      quote.dataQuality,
+      quote.dataQuality === 'SYNTHETIC'
+        ? 'Invented candles — will not fill'
+        : quote.stale
+          ? `Quote ${Math.round(quote.ageMs / 1000)}s old`
+          : quote.dataQuality === 'DEGRADED'
+            ? 'Yahoo delayed FX is OK for paper, not for live broker fills'
+            : `Yahoo ${quote.source}`,
+      'Paper uses Yahoo charts. Fake/synthetic prices are a hard no. Live trading still needs a broker tick.',
+    ),
+    gate(
+      'session',
+      'Market session',
+      sessionOk && session.forexOpen,
+      true,
+      session.name,
+      analysis.filtersFailed.find((f) => /closed|Rollover|Session-open|Friday|News/i.test(f)) ??
+        session.note,
+      'Do not enter into a closed market, news blackout, or rollover spread spike.',
+    ),
+    gate(
+      'spread',
+      'Spread',
+      spreadOk,
+      true,
+      `${quote.spreadPips.toFixed(1)} / max ${market.spec.maxSpreadPips} pips`,
+      spreadOk ? 'Inside the pair’s max spread' : 'Spread is too wide to take the setup',
+      'A wide spread eats the stop before the idea has a chance.',
+    ),
+    gate(
+      'quality',
+      'Setup quality',
+      qualityOk,
+      true,
+      `${analysis.setupQuality} / ${DEFAULT_FOREX_RISK.minSetupQuality}`,
+      qualityOk
+        ? 'Above the tradeable threshold — still not a win probability'
+        : `Quality ${analysis.setupQuality} is below ${DEFAULT_FOREX_RISK.minSetupQuality}`,
+      'Quality is how clean the setup is, not the chance it wins. Below the floor is a wait.',
+    ),
+    gate(
+      'rr',
+      'Risk / reward',
+      rrOk,
+      true,
+      analysis.side ? `${analysis.riskReward1.toFixed(2)} : 1` : 'n/a',
+      rrOk
+        ? 'First target is far enough vs the stop'
+        : `R:R ${analysis.riskReward1.toFixed(2)} is below ${DEFAULT_FOREX_RISK.minRiskReward}`,
+      'If the stop is wide and TP1 is close, skip even when the candles look good.',
+    ),
+    gate(
+      'lean',
+      'BUY / SELL lean',
+      leanOk && sideOk,
+      true,
+      `BUY ${analysis.buyPct}% · SELL ${analysis.sellPct}%`,
+      !leanOk
+        ? 'No side — WAIT. Do not force a buy.'
+        : !sideOk
+          ? `You tapped ${side} but the live lean is ${analysis.side}`
+          : `${analysis.side} lean is the only side this card supports`,
+      'Same rule as memecoin: do not buy just because a card exists. The live lean has to match.',
+    ),
+    ...independent,
+  ];
+
+  const blockingFails = items.filter((i) => i.blocking && !i.passed);
+  const agreeing = independent.filter((i) => i.passed && i.status !== 'NEUTRAL').length;
+  const available = independent.filter((i) => i.status !== 'NEUTRAL').length;
+  const canTrade = analysis.tradeable && sideOk && blockingFails.length === 0;
+  const decision = !leanOk ? 'WAIT' : !canTrade ? 'NO_TRADE' : analysis.side ?? 'WAIT';
+  const verb = side === 'SELL' ? 'sell' : 'buy';
+
+  return {
+    title: canTrade ? 'Why This Passed' : 'Why Not Buy',
+    decision,
+    buyScore: analysis.buyPct,
+    safetyScore: analysis.setupQuality,
+    agreeing,
+    required: 3,
+    available,
+    summary: canTrade
+      ? `Candles + trend + RSI support ${analysis.side}. Still a potential setup only — paper first, never guaranteed.`
+      : blockingFails.length
+        ? `DO NOT ${verb.toUpperCase()} — tests failed: ${blockingFails.map((f) => f.label).join('; ')}. Taking this trade is how you run a loss.`
+        : agreeing < 3
+          ? `DO NOT ${verb.toUpperCase()} yet — only ${agreeing} independent reads agree (need 3).`
+          : analysis.filtersFailed[0] ?? 'Filters not met.',
+    items,
+    testsPassed: canTrade,
+  };
+}
+
+/** Telegram/email only when the pair is actually tradeable — same bar as the in-app BUY button. */
+export function shouldAlertFx(row: {
+  bias: string;
+  buyPct: number;
+  sellPct: number;
+  tradeable?: boolean;
+}): boolean {
+  if (!row.tradeable) return false;
+  if (row.bias !== 'BUY' && row.bias !== 'SELL') return false;
+  const lean = row.bias === 'BUY' ? row.buyPct : row.sellPct;
+  return lean >= 60;
 }

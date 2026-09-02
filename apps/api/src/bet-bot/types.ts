@@ -153,6 +153,7 @@ export type FixtureSummary = {
   home: { id: string; name: string; popular: boolean };
   away: { id: string; name: string; popular: boolean };
   popularMatch: boolean;
+  topLeague?: boolean;
   live?: boolean;
   score?: { home: number | null; away: number | null };
   minute?: string;
@@ -223,6 +224,17 @@ export type MultiScorePick = {
   reason: string;
 };
 
+export type CardMarketLine = {
+  family: string;
+  pct: number;
+  detail: string;
+};
+
+export type HalfTimePick = {
+  label: string;
+  pct: number;
+};
+
 export type FixtureAnalysis = {
   fixture: FixtureSummary;
   popularity: { home: boolean; away: boolean; note: string };
@@ -242,10 +254,12 @@ export type FixtureAnalysis = {
     label: string;
     reason: string;
   } | null;
+  halfTime?: HalfTimePick;
   markets: MarketAnalysis[];
   recommended: MarketAnalysis | null;
   rankedMarkets?: BetMarket[];
   multiScore?: MultiScorePick;
+  cardLines?: CardMarketLine[];
   avoidReasons: string[];
   disclaimer: string;
   ai?: AiMatchAnalysis;
@@ -262,4 +276,7 @@ export type AiMatchAnalysis = {
   why: string[];
   risk: string;
   note: string;
+  statsMarket?: BetMarket;
+  chosenFrom?: 'openai' | 'stats' | 'local';
+  webSources?: Array<{ title: string; url: string }>;
 };

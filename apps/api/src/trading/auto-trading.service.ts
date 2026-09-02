@@ -2,11 +2,14 @@ import {
   BadRequestException,
   Injectable,
   Logger,
+  OnModuleDestroy,
+  OnModuleInit,
 } from '@nestjs/common';
 import { DISCLAIMER, TradingMode } from '@memecoinbot/shared';
 import { SettingsService } from '../settings/settings.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { SignalsService } from '../signals/signals.service';
+import { PaperService } from '../paper/paper.service';
 import { TradingService, type TradeProposal } from './trading.service';
 
 export type AutoCycleResult = {
@@ -25,16 +28,35 @@ export type AutoCycleResult = {
 };
 
 @Injectable()
-export class AutoTradingService {
+export class AutoTradingService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(AutoTradingService.name);
   private lastCycle: AutoCycleResult | null = null;
+  private demoTimer: ReturnType<typeof setInterval> | null = null;
+  private demoFirst: ReturnType<typeof setTimeout> | null = null;
+  private demoBusy = false;
+  private readonly demoFilled = new Set<string>();
 
   constructor(
     private readonly settings: SettingsService,
     private readonly signals: SignalsService,
     private readonly trading: TradingService,
     private readonly notifications: NotificationsService,
+    private readonly paper: PaperService,
   ) {}
+
+  onModuleInit() {
+    this.demoFirst = setTimeout(() => void this.runDemoAuto(), 20_000);
+    this.demoTimer = setInterval(() => void this.runDemoAuto(), 45 * 1000);
+    this.signals.onPassedBuy((sig) => {
+      void this.fillPassedBuy(sig);
+    });
+    this.logger.log('Memecoin demo auto-trade armed (fills the moment BUY tests pass if toggle ON)');
+  }
+
+  onModuleDestroy() {
+    if (this.demoFirst) clearTimeout(this.demoFirst);
+    if (this.demoTimer) clearInterval(this.demoTimer);
+  }
 
   getStatus() {
     const s = this.settings.getSettings();
@@ -43,6 +65,9 @@ export class AutoTradingService {
     return {
       tradingMode: s.tradingMode,
       autoTradingEnabled: s.autoTradingEnabled,
+      autoTradeMemecoins: s.autoTradeMemecoins,
+      autoTradeMemecoinAddresses: s.autoTradeMemecoinAddresses,
+      autoTradeForex: s.autoTradeForex,
       killSwitch: s.killSwitch,
       emergencyStop: s.emergencyStop,
       walletPublicKey: s.walletPublicKey
@@ -51,7 +76,7 @@ export class AutoTradingService {
       realTradingBroadcast: s.realTradingBroadcast,
       axiomRequiredForAutoTrading: s.axiomRequiredForAutoTrading,
       executionMode: this.settings.autoExecutionMode(),
-      label: s.autoTradingEnabled ? 'AUTO TRADING ON' : 'AUTO TRADING OFF',
+      label: s.autoTradeMemecoins || s.autoTradingEnabled ? 'AUTO TRADING ON' : 'AUTO TRADING OFF',
       killSwitchLabel: s.killSwitch ? 'KILL SWITCH ON' : 'KILL SWITCH OFF',
       warning: s.autoTradingEnabled
         ? 'REAL MONEY TRADING ENABLED. Trading can result in financial loss.'
@@ -61,7 +86,9 @@ export class AutoTradingService {
       canPrepareManualTrade: prepareGate.ok && s.tradingMode === TradingMode.MANUAL_REAL,
       lastCycleAt: this.lastCycle?.ranAt ?? null,
       reason: [
-        s.autoTradingEnabled ? 'Auto trading enabled' : 'AUTO TRADING OFF',
+        s.autoTradeMemecoins ? 'Memecoin demo auto ON (BUY only if tests pass)' : 'Memecoin demo auto OFF',
+        s.autoTradeForex ? 'Forex demo auto ON (fills only if tests pass)' : 'Forex demo auto OFF',
+        s.autoTradingEnabled ? 'Real auto trading enabled' : 'REAL AUTO TRADING OFF',
         s.killSwitch ? 'Kill switch active — NO REAL TRADES' : null,
         s.emergencyStop ? 'Emergency stop active' : null,
         s.tradingMode !== TradingMode.AUTO && s.autoTradingEnabled
@@ -77,6 +104,64 @@ export class AutoTradingService {
         .filter(Boolean)
         .join('; '),
     };
+  }
+
+  /** Demo/paper fills for memecoin BUY setups that still pass every hard test. */
+  async fillPassedBuy(sig: {
+    token: { address: string; symbol: string };
+    signalType: string;
+    whyNotBuy: { testsPassed: boolean };
+    levels: { entryValid: boolean };
+  }): Promise<boolean> {
+    const s = this.settings.getSettings();
+    if (
+      s.emergencyStop ||
+      !s.autoTradeMemecoins ||
+      !s.autoTradeMemecoinAddresses.includes(sig.token.address)
+    ) {
+      return false;
+    }
+    if (sig.signalType !== 'BUY' || !sig.whyNotBuy.testsPassed || !sig.levels.entryValid) return false;
+    const key = sig.token.address;
+    if (this.demoFilled.has(key)) return false;
+    this.demoFilled.add(key);
+    try {
+      await this.paper.openFromSignal(key);
+      this.logger.log(`Demo auto BUY $${sig.token.symbol} — tests passed`);
+      return true;
+    } catch (err) {
+      this.demoFilled.delete(key);
+      this.logger.warn(
+        `Demo auto skipped $${sig.token.symbol}: ${err instanceof Error ? err.message : 'error'}`,
+      );
+      return false;
+    }
+  }
+
+  async runDemoAuto(): Promise<{ filled: number; skipped: number; reason: string }> {
+    const s = this.settings.getSettings();
+    if (this.demoBusy) return { filled: 0, skipped: 0, reason: 'busy' };
+    if (s.emergencyStop) return { filled: 0, skipped: 0, reason: 'emergency stop' };
+    if (!s.autoTradeMemecoins) return { filled: 0, skipped: 0, reason: 'memecoin auto off' };
+
+    this.demoBusy = true;
+    let filled = 0;
+    let skipped = 0;
+    try {
+      const recent = this.signals.listRecent(10);
+      for (const sig of recent) {
+        if (await this.fillPassedBuy(sig)) filled += 1;
+        else skipped += 1;
+      }
+      if (this.demoFilled.size > 40) {
+        const keep = [...this.demoFilled].slice(-20);
+        this.demoFilled.clear();
+        for (const k of keep) this.demoFilled.add(k);
+      }
+      return { filled, skipped, reason: 'ok' };
+    } finally {
+      this.demoBusy = false;
+    }
   }
 
   enable(body: { confirmRealMoney?: boolean; acknowledgeWarning?: boolean }) {

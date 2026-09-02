@@ -1,5 +1,5 @@
 import React from 'react';
-import { Pressable, Text, View } from 'react-native';
+import { Pressable, Switch, Text, View } from 'react-native';
 import { formatPairAgeHours } from '@memecoinbot/shared';
 import { colors, common, formatPct, formatUsd, spacing } from '../theme';
 import { StatusBadge } from './StatusBadge';
@@ -23,6 +23,8 @@ type Props = {
   sourceTags?: string[];
   whyLine?: string | null;
   onPress?: () => void;
+  autoTrade?: boolean;
+  onToggleAuto?: (value: boolean) => void;
 };
 
 const SIGNAL_LABEL: Record<string, string> = {
@@ -48,6 +50,8 @@ export function TokenRow({
   sourceTags,
   whyLine,
   onPress,
+  autoTrade,
+  onToggleAuto,
 }: Props) {
   const change = priceChange24h ?? 0;
   const ageLabel = formatPairAgeHours(pairAgeHours);
@@ -130,6 +134,21 @@ export function TokenRow({
           />
         ) : null}
       </View>
+      {onToggleAuto ? (
+        <View style={[common.row, { marginTop: 10 }]}>
+          <Text style={[common.cardBody, { flex: 1 }]}>
+            Auto-trade this coin when BUY passes
+          </Text>
+          <Switch
+            value={!!autoTrade}
+            onValueChange={onToggleAuto}
+            trackColor={{ false: colors.border, true: colors.accent }}
+          />
+        </View>
+      ) : null}
+      <Text style={[common.cardBody, { marginTop: onToggleAuto ? 4 : 8, color: colors.muted, fontSize: 11 }]}>
+        Tap card for full details
+      </Text>
     </View>
   );
 }

@@ -109,4 +109,31 @@ describe('SettingsService', () => {
     expect(svc.getSettings().autoTradingEnabled).toBe(false);
     expect(svc.getSettings().tradingMode).toBe(TradingMode.MANUAL_REAL);
   });
+
+  it('keeps memecoin auto-trade disabled without a selected token', () => {
+    const svc = new SettingsService();
+    expect(svc.getSettings().autoTradeMemecoins).toBe(false);
+    expect(svc.getSettings().autoTradeForex).toBe(false);
+
+    const on = svc.updateSettings({ autoTradeMemecoins: true, autoTradeForex: true });
+    expect(on.autoTradeMemecoins).toBe(false);
+    expect(on.autoTradeForex).toBe(true);
+    expect(on.autoTradingEnabled).toBe(false);
+
+    svc.activateEmergencyStop();
+    expect(svc.getSettings().autoTradeMemecoins).toBe(false);
+    expect(svc.getSettings().autoTradeForex).toBe(false);
+  });
+
+  it('stores memecoin auto-trade selections per token address', () => {
+    const svc = new SettingsService();
+    const address = 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263';
+    const s = svc.updateSettings({ autoTradeMemecoinAddresses: [address, address, 'invalid'] });
+    expect(s.autoTradeMemecoinAddresses).toEqual([address]);
+    expect(s.autoTradeMemecoins).toBe(true);
+
+    const off = svc.updateSettings({ autoTradeMemecoinAddresses: [] });
+    expect(off.autoTradeMemecoinAddresses).toEqual([]);
+    expect(off.autoTradeMemecoins).toBe(false);
+  });
 });

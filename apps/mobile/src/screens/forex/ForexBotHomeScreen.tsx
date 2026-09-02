@@ -1,9 +1,10 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Pressable,
   RefreshControl,
   ScrollView,
+  Switch,
   Text,
   View,
 } from 'react-native';
@@ -17,8 +18,10 @@ import {
   fetchForexPositions,
   fetchForexScan,
   fetchForexStatus,
+  fetchSettings,
   setForexKillSwitch,
   tickForexPositions,
+  updateSettings,
   type FxBoardRow,
   type FxPosition,
   type FxRisk,
@@ -31,12 +34,14 @@ import type { ForexBotStackParamList } from '../../navigation/types';
 type Props = NativeStackScreenProps<ForexBotStackParamList, 'ForexHome'>;
 type Tab = 'SETUPS' | 'OPEN' | 'JOURNAL' | 'RISK' | 'LAB';
 
-export function ForexBotHomeScreen({ navigation }: Props) {
-  const [tab, setTab] = useState<Tab>('SETUPS');
+export function ForexBotHomeScreen({ navigation, route }: Props) {
+  const [tab, setTab] = useState<Tab>(route.params?.tab ?? 'SETUPS');
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState(route.params?.notice ?? '');
   const [killSwitch, setKill] = useState(true);
+  const [autoTradeForex, setAutoFx] = useState(false);
   const [pipeline, setPipeline] = useState<string[]>([]);
   const [sessionNote, setSessionNote] = useState('');
   const [source, setSource] = useState('');
@@ -57,12 +62,13 @@ export function ForexBotHomeScreen({ navigation }: Props) {
     setError(null);
     try {
       const scan = await fetchForexScan();
-      const [st, pos, journal, cal, bt] = await Promise.all([
+      const [st, pos, journal, cal, bt, app] = await Promise.all([
         fetchForexStatus().catch(() => null),
         fetchForexPositions().catch(() => ({ items: [] as FxPosition[] })),
         fetchForexJournal().catch(() => null),
         fetchForexCalendar().catch(() => null),
         fetchForexBacktest().catch(() => null),
+        fetchSettings().catch(() => null),
       ]);
       if (st) {
         setKill(st.killSwitch);
@@ -70,10 +76,12 @@ export function ForexBotHomeScreen({ navigation }: Props) {
         setScoringNote(st.scoringNote);
         setDisclaimer(st.disclaimer);
         setSessionNote(scan.session?.note || st.session.note);
+        if (typeof st.autoTradeForex === 'boolean') setAutoFx(st.autoTradeForex);
       } else {
         setSessionNote(scan.session?.note || '');
         setDisclaimer(scan.disclaimer);
       }
+      if (app && typeof app.autoTradeForex === 'boolean') setAutoFx(app.autoTradeForex);
       setSource(scan.source || '');
       setSignals(scan.signals ?? []);
       setBoard(scan.board ?? []);
@@ -108,6 +116,11 @@ export function ForexBotHomeScreen({ navigation }: Props) {
     }, [load]),
   );
 
+  useEffect(() => {
+    if (route.params?.tab) setTab(route.params.tab);
+    if (route.params?.notice) setNotice(route.params.notice);
+  }, [route.params?.tab, route.params?.notice]);
+
   const run = async (fn: () => Promise<unknown>) => {
     setBusy(true);
     setError(null);
@@ -138,7 +151,8 @@ export function ForexBotHomeScreen({ navigation }: Props) {
     >
       <Text style={common.title}>FX BOT</Text>
       <Text style={common.subtitle}>
-        Live Yahoo quotes. Telegram/email when BUY or SELL hits 60%+ (every 3 min). Tap the button to recheck before any paper fill.
+        Live Yahoo quotes. Telegram/email when BUY or SELL hits 60%+ (every 3 min). Auto-trade
+        only fills demo when every test passes.
       </Text>
 
       <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: spacing.sm }}>
@@ -151,11 +165,36 @@ export function ForexBotHomeScreen({ navigation }: Props) {
 
       <View style={[common.row, { marginBottom: spacing.sm }]}>
         <StatusBadge label={killSwitch ? 'KILL SWITCH ON' : 'KILL SWITCH OFF'} tone={killSwitch ? 'danger' : 'ok'} />
-        <StatusBadge label="PAPER / DEMO" tone="info" />
+        <StatusBadge label="DEMO" tone="info" />
+        <StatusBadge label={autoTradeForex ? 'FX AUTO ON' : 'FX AUTO OFF'} tone={autoTradeForex ? 'warn' : 'ok'} />
       </View>
       <Text style={[common.cardBody, { marginBottom: spacing.sm }]}>{sessionNote}</Text>
       {source ? <Text style={[common.cardBody, { marginBottom: spacing.sm }]}>{source}</Text> : null}
 
+      <View
+        style={[
+          common.card,
+          { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing.sm },
+        ]}
+      >
+        <View style={{ flex: 1, paddingRight: 12 }}>
+          <Text style={common.cardTitle}>Auto-trade Forex (demo)</Text>
+          <Text style={common.cardBody}>
+            When ON, a tradeable BUY/SELL is filled as a demo at the same time Telegram fires.
+            A lean without passing tests does not alert and does not fill.
+          </Text>
+        </View>
+        <Switch
+          value={autoTradeForex}
+          disabled={busy}
+          onValueChange={(v) =>
+            void run(async () => {
+              const next = await updateSettings({ autoTradeForex: v });
+              setAutoFx(!!next.autoTradeForex);
+            })
+          }
+        />
+      </View>
       <View style={{ flexDirection: 'row', gap: 8, marginBottom: spacing.sm }}>
         <Pressable
           style={[common.secondaryBtn, { flex: 1 }]}
@@ -172,6 +211,13 @@ export function ForexBotHomeScreen({ navigation }: Props) {
           <Text style={[common.secondaryBtnText, { color: colors.danger }]}>Emergency stop</Text>
         </Pressable>
       </View>
+
+      {notice ? (
+        <View style={[common.card, { borderColor: colors.accent }]}>
+          <StatusBadge label="DEMO FILL" tone="ok" />
+          <Text style={[common.cardBody, { marginTop: 6, color: colors.text }]}>{notice}</Text>
+        </View>
+      ) : null}
 
       {error ? (
         <View style={common.card}>
@@ -206,17 +252,29 @@ export function ForexBotHomeScreen({ navigation }: Props) {
 
       {tab === 'SETUPS'
         ? board.map((row) => {
-            const tone = row.bias === 'BUY' ? 'ok' : row.bias === 'SELL' ? 'danger' : 'warn';
             const change = `${row.changePct >= 0 ? '+' : ''}${row.changePct.toFixed(2)}%`;
-            const open = (side: 'BUY' | 'SELL') => {
-              if (!row.signalId) return;
-              navigation.navigate('ForexSignal', { id: row.signalId, side });
+            const open = (side?: 'BUY' | 'SELL') => {
+              navigation.navigate('ForexSignal', {
+                symbol: row.symbol,
+                id: row.signalId ?? undefined,
+                side,
+              });
             };
             return (
               <View key={row.symbol} style={common.card}>
+                <Pressable onPress={() => open()}>
                 <View style={common.row}>
                   <Text style={common.cardTitle}>{row.symbol}</Text>
-                  <StatusBadge label={`${row.bias} ${row.bias === 'WAIT' ? row.setupQuality : row.bias === 'BUY' ? row.buyPct : row.sellPct}%`} tone={tone} />
+                  <StatusBadge
+                    label={
+                      row.tradeable
+                        ? `SAFE ${row.bias === 'BUY' ? row.buyPct : row.sellPct}%`
+                        : row.bias === 'WAIT'
+                          ? `WAIT ${row.setupQuality}`
+                          : `LEAN ${row.bias} ${row.bias === 'BUY' ? row.buyPct : row.sellPct}%`
+                    }
+                    tone={row.tradeable ? 'ok' : 'warn'}
+                  />
                 </View>
                 <Text style={[common.metric, { fontSize: 22 }]}>
                   {row.mid.toFixed(row.symbol.includes('JPY') || row.symbol === 'XAUUSD' ? 3 : 5)}
@@ -225,9 +283,15 @@ export function ForexBotHomeScreen({ navigation }: Props) {
                   {change} · {row.changePips >= 0 ? '+' : ''}
                   {row.changePips.toFixed(1)} pips · spread {row.spreadPips.toFixed(1)}
                 </Text>
-                <Text style={[common.cardBody, { marginTop: 6, color: colors.text, fontWeight: '700' }]}>
-                  BUY {row.buyPct}% · SELL {row.sellPct}% · quality {row.setupQuality}/100
-                </Text>
+                {row.tradeable ? (
+                  <Text style={[common.cardBody, { marginTop: 6, color: colors.positive, fontWeight: '700' }]}>
+                    Tests passed · {row.bias} {row.bias === 'BUY' ? row.buyPct : row.sellPct}%
+                  </Text>
+                ) : (
+                  <Text style={[common.cardBody, { marginTop: 6, color: colors.warn, fontWeight: '700' }]}>
+                    BUY {row.buyPct}% / SELL {row.sellPct}% is a lean only — tests not passed, do not trade
+                  </Text>
+                )}
                 <Text style={common.cardBody}>
                   Bid {row.bid} · Ask {row.ask}
                   {row.rsi != null ? ` · RSI ${row.rsi.toFixed(0)}` : ''}
@@ -243,10 +307,19 @@ export function ForexBotHomeScreen({ navigation }: Props) {
                 <Text style={[common.cardBody, { marginTop: 4 }]} numberOfLines={3}>
                   {row.reasons[0] || row.blockers[0] || 'Scanning…'}
                 </Text>
+                {row.bias !== 'BUY' && (row.blockers[0] || row.reasons[0]) ? (
+                  <Text style={[common.cardBody, { color: colors.warn, marginTop: 4 }]} numberOfLines={2}>
+                    Why not buy: {row.blockers[0] || row.reasons[0]}
+                  </Text>
+                ) : null}
+                <Text style={[common.cardBody, { color: colors.muted, marginTop: 4, fontSize: 11 }]}>
+                  Tap card for candlestick + why not buy
+                </Text>
+                </Pressable>
                 <View style={{ flexDirection: 'row', gap: 8, marginTop: 10 }}>
                   <Pressable
-                    style={[common.primaryBtn, { flex: 1, opacity: row.signalId && row.bias !== 'SELL' ? 1 : 0.4 }]}
-                    disabled={!row.signalId || row.bias === 'SELL'}
+                    style={[common.primaryBtn, { flex: 1, opacity: row.bias === 'BUY' && row.tradeable ? 1 : 0.4 }]}
+                    disabled={row.bias !== 'BUY' || !row.tradeable}
                     onPress={() => open('BUY')}
                   >
                     <Text style={common.primaryBtnText}>BUY {row.buyPct}%</Text>
@@ -254,9 +327,9 @@ export function ForexBotHomeScreen({ navigation }: Props) {
                   <Pressable
                     style={[
                       common.secondaryBtn,
-                      { flex: 1, borderColor: colors.danger, opacity: row.signalId && row.bias !== 'BUY' ? 1 : 0.4 },
+                      { flex: 1, borderColor: colors.danger, opacity: row.bias === 'SELL' && row.tradeable ? 1 : 0.4 },
                     ]}
-                    disabled={!row.signalId || row.bias === 'BUY'}
+                    disabled={row.bias !== 'SELL' || !row.tradeable}
                     onPress={() => open('SELL')}
                   >
                     <Text style={[common.secondaryBtnText, { color: colors.danger }]}>SELL {row.sellPct}%</Text>
@@ -303,13 +376,17 @@ export function ForexBotHomeScreen({ navigation }: Props) {
           ))
         : null}
       {tab === 'OPEN' && !positions.length ? (
-        <Text style={common.cardBody}>No open paper positions. Setups never auto-trade — you click BUY/SELL.</Text>
+        <Text style={common.cardBody}>
+          {autoTradeForex
+            ? 'No open demo positions. Auto-trade will fill a SAFE setup only after tests pass.'
+            : 'No open demo positions. Turn on Auto-trade Forex, or tap BUY/SELL then Demo trade when tests pass.'}
+        </Text>
       ) : null}
 
       {tab === 'JOURNAL' ? (
         <View style={common.card}>
           <Text style={common.cardTitle}>Performance</Text>
-          <Text style={common.cardBody}>{journalNote || 'No closed paper trades yet.'}</Text>
+          <Text style={common.cardBody}>{journalNote || 'No closed demo trades yet.'}</Text>
           {journalItems.map((j) => (
             <Text key={j.id} style={[common.cardBody, { marginTop: 6 }]}>
               {j.symbol} {j.side} · {j.pnlUsd.toFixed(2)} USD · {j.exitReason}
@@ -322,7 +399,7 @@ export function ForexBotHomeScreen({ navigation }: Props) {
         <View style={common.card}>
           <Text style={common.cardTitle}>Exposure</Text>
           <Text style={common.metric}>${risk.equity.toFixed(2)}</Text>
-          <Text style={common.metricLabel}>Equity · paper</Text>
+          <Text style={common.metricLabel}>Equity · demo</Text>
           <Text style={[common.cardBody, { marginTop: 8 }]}>
             Daily DD {risk.dailyDrawdownPct.toFixed(2)}% {risk.dailyHalt ? '(HALT)' : ''} · weekly{' '}
             {risk.weeklyDrawdownPct.toFixed(2)}% {risk.weeklyHalt ? '(HALT)' : ''}

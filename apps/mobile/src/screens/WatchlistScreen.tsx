@@ -20,6 +20,7 @@ import { TokenRow } from '../components/TokenRow';
 import { StatusBadge } from '../components/StatusBadge';
 import { colors, common, spacing } from '../theme';
 import type { RootStackParamList } from '../navigation/types';
+import { useMemecoinAutoTrade } from '../settings/MemecoinAutoTradeContext';
 
 export function WatchlistScreen() {
   const navigation =
@@ -29,6 +30,8 @@ export function WatchlistScreen() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { addresses: autoTradeAddresses, toggle: toggleAutoTrade } =
+    useMemecoinAutoTrade();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -129,6 +132,10 @@ export function WatchlistScreen() {
                 onPress={() =>
                   navigation.navigate('TokenDetails', { address: item.address })
                 }
+                autoTrade={autoTradeAddresses.includes(item.address)}
+                onToggleAuto={(v) => {
+                  void toggleAutoTrade(item.address, v).catch(() => undefined);
+                }}
               />
               <Pressable
                 onPress={() =>

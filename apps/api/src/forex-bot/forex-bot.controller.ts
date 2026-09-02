@@ -1,5 +1,7 @@
-import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
+import type { IUser } from '@memecoinbot/db';
 import { AuthGuard } from '../auth/auth.guard';
+import { CurrentUser } from '../auth/current-user.decorator';
 import { ForexBotService } from './forex-bot.service';
 
 @Controller('forex-bot')
@@ -13,8 +15,19 @@ export class ForexBotController {
   }
 
   @Get('scan')
-  scan() {
+  scan(@Query('symbol') symbol?: string, @Query('interval') interval?: string) {
+    if (symbol) return this.forex.pairDetail(symbol, interval);
     return this.forex.scan();
+  }
+
+  @Get('pairs/:symbol')
+  pair(@Param('symbol') symbol: string, @Query('interval') interval?: string) {
+    return this.forex.pairDetail(symbol, interval);
+  }
+
+  @Get('pair/:symbol')
+  pairAlias(@Param('symbol') symbol: string, @Query('interval') interval?: string) {
+    return this.forex.pairDetail(symbol, interval);
   }
 
   @Get('signals')
@@ -33,8 +46,12 @@ export class ForexBotController {
   }
 
   @Post('signals/:id/execute')
-  execute(@Param('id') id: string, @Body() body: { side?: 'BUY' | 'SELL' }) {
-    return this.forex.execute(id, body.side === 'SELL' ? 'SELL' : 'BUY');
+  execute(
+    @CurrentUser() user: IUser,
+    @Param('id') id: string,
+    @Body() body: { side?: 'BUY' | 'SELL' },
+  ) {
+    return this.forex.execute(id, body.side === 'SELL' ? 'SELL' : 'BUY', user);
   }
 
   @Get('positions')
@@ -43,13 +60,13 @@ export class ForexBotController {
   }
 
   @Post('positions/tick')
-  tick() {
-    return this.forex.tick();
+  tick(@CurrentUser() user: IUser) {
+    return this.forex.tick(user);
   }
 
   @Post('positions/:id/close')
-  close(@Param('id') id: string) {
-    return this.forex.close(id);
+  close(@CurrentUser() user: IUser, @Param('id') id: string) {
+    return this.forex.close(id, user);
   }
 
   @Get('journal')

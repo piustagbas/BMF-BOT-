@@ -1,4 +1,5 @@
 import { BadRequestException, Injectable, Logger, NotFoundException, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import type { IUser } from '@memecoinbot/db';
 import {
   DEFAULT_FOREX_RISK,
   FOREX_DISCLAIMER,
@@ -8,9 +9,11 @@ import {
   type FxSignal,
   type JournalEntry,
 } from './types';
-import { PAIRS } from './pairs';
-import { activeBlackouts, highImpactEvents, sessionSnapshot } from './calendar';
-import { loadMarkets, refreshQuote, type PairMarket } from './market';
+import { PAIRS, getPair, pnlUsd } from './pairs';
+import { activeBlackouts, filterReasonsForTime, highImpactEvents, sessionSnapshot } from './calendar';
+import { fetchYahooOhlcv, loadMarkets, normalizeFxInterval, refreshQuote, toChartCandles, type PairMarket } from './market';
+import { analyzePair, buildFxWhyNotBuy, shouldAlertFx } from './analysis';
+import { analyzeCandlestickStructure } from '@memecoinbot/indicators';
 import { runScan } from './pipeline';
 import { buildRiskSnapshot, drawdownState } from './risk';
 import {
@@ -23,6 +26,8 @@ import { analytics, toJournal } from './journal';
 import { demoWalkForward } from './backtest';
 import { NotificationsService } from '../notifications/notifications.service';
 import { SettingsService } from '../settings/settings.service';
+import { TradeNotificationsService } from '../notifications/trade-notifications.service';
+import { completionKindForPnl } from '../notifications/trade-events';
 
 @Injectable()
 export class ForexBotService implements OnModuleInit, OnModuleDestroy {
@@ -38,10 +43,12 @@ export class ForexBotService implements OnModuleInit, OnModuleDestroy {
   private scanTimer: ReturnType<typeof setInterval> | null = null;
   private firstScanTimer: ReturnType<typeof setTimeout> | null = null;
   private scanning = false;
+  private readonly autoFilled = new Set<string>();
 
   constructor(
     private readonly notifications: NotificationsService,
     private readonly settings: SettingsService,
+    private readonly tradeNotifications: TradeNotificationsService,
   ) {}
 
   onModuleInit() {
@@ -62,6 +69,7 @@ export class ForexBotService implements OnModuleInit, OnModuleDestroy {
       pipeline: PIPELINE_STAGES,
       mode: this.mode,
       killSwitch: this.killSwitch,
+      autoTradeForex: this.settings.getSettings().autoTradeForex,
       paperDefault: true,
       liveBroker: null,
       liveBlockedReason: 'No live FX broker adapter is connected. Paper/demo only.',
@@ -73,7 +81,7 @@ export class ForexBotService implements OnModuleInit, OnModuleDestroy {
       scoringNote:
         'Setup quality is 0–100 for the quality of the setup. It is not the probability of a winning trade.',
       alerts:
-        'Telegram/email when a pair leans BUY or SELL at 60%+ (every 3 minutes, same setup at most once per 45 minutes). Open FX BOT and tap to recheck before any fill.',
+        'Telegram/email only when a pair is tradeable (same bar as the in-app BUY/SELL button). Lean without passing tests does not alert.',
       notifyFxSetups: this.settings.getSettings().notifyFxSetups !== false,
     };
   }
@@ -106,6 +114,7 @@ export class ForexBotService implements OnModuleInit, OnModuleDestroy {
       });
       this.mergeSignals(result.signals, now);
       await this.alertBoard(result.board);
+      await this.autoFillPassedSetups(result.board);
       return {
         ...result,
         source: loaded.source,
@@ -145,6 +154,77 @@ export class ForexBotService implements OnModuleInit, OnModuleDestroy {
     return { signal, disclaimer: FOREX_DISCLAIMER };
   }
 
+  async pairDetail(symbol: string, timeframe?: string) {
+    const spec = (() => {
+      try {
+        return getPair(symbol);
+      } catch {
+        throw new NotFoundException('Unknown pair');
+      }
+    })();
+    const now = new Date();
+    const interval = normalizeFxInterval(timeframe);
+    const loaded = await loadMarkets(now);
+    const market = loaded.markets.find((m) => m.spec.symbol === spec.symbol);
+    if (!market) throw new NotFoundException('No live market for this pair');
+    let chartCandles = market.candles;
+    if (interval !== '15m') {
+      try {
+        const fetched = await fetchYahooOhlcv(spec, interval, now);
+        if (fetched.length >= 8) chartCandles = fetched;
+      } catch {
+        chartCandles = market.candles;
+      }
+    }
+    const session = sessionSnapshot(now);
+    const timeFilters = filterReasonsForTime(now, spec);
+    const analysis = analyzePair(market, session, timeFilters);
+    const candlestick = analyzeCandlestickStructure(chartCandles.length ? chartCandles : market.candles);
+    const signal =
+      this.liveSignals(now).find((s) => s.symbol === spec.symbol) ??
+      this.signals.find((s) => s.symbol === spec.symbol) ??
+      null;
+    const whyNotBuy = buildFxWhyNotBuy({
+      analysis,
+      market,
+      candles: candlestick,
+      session,
+      requestedSide: analysis.side,
+    });
+    return {
+      symbol: spec.symbol,
+      interval,
+      source: loaded.source,
+      quote: refreshQuote(market, now),
+      analysis: {
+        bias: analysis.bias,
+        side: analysis.side,
+        buyPct: analysis.buyPct,
+        sellPct: analysis.sellPct,
+        setupQuality: analysis.setupQuality,
+        rsi: analysis.rsi,
+        changePct: analysis.changePct,
+        changePips: analysis.changePips,
+        zone: analysis.zone,
+        stopLoss: analysis.stopLoss,
+        takeProfit1: analysis.takeProfit1,
+        takeProfit2: analysis.takeProfit2,
+        riskReward1: analysis.riskReward1,
+        tradeable: analysis.tradeable,
+        reasons: analysis.reasons,
+        filtersFailed: analysis.filtersFailed,
+        breakdown: analysis.breakdown,
+        confidence: analysis.confidence,
+      },
+      candlestick,
+      candles: toChartCandles(chartCandles),
+      whyNotBuy,
+      signal,
+      session,
+      disclaimer: FOREX_DISCLAIMER,
+    };
+  }
+
   async recheck(id: string, side: 'BUY' | 'SELL') {
     const signal = this.requireSignal(id);
     const now = new Date();
@@ -152,7 +232,7 @@ export class ForexBotService implements OnModuleInit, OnModuleDestroy {
     const market = loaded.markets.find((m) => m.spec.symbol === signal.symbol);
     if (!market) throw new BadRequestException('No live market for this pair');
     signal.quote = refreshQuote(market, now);
-    const check = recheckLive({ signal, market, now, requestedSide: side });
+    const check = recheckLive({ signal, market, now, requestedSide: side, mode: this.mode });
     return {
       signal,
       ...check,
@@ -161,66 +241,135 @@ export class ForexBotService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  async execute(id: string, side: 'BUY' | 'SELL') {
-    const signal = this.requireSignal(id);
-    const now = new Date();
-    if (this.killSwitch) throw new BadRequestException('Kill switch is ON — execution blocked');
-    const dd = this.drawdown();
-    if (dd.dailyHalt || dd.weeklyHalt) {
-      throw new BadRequestException('Drawdown halt — no new trades');
+  async execute(id: string, side: 'BUY' | 'SELL', user?: IUser) {
+    const attemptId = `forex:${id}:${side}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
+    let symbol = 'FOREX';
+    try {
+      const signal = this.requireSignal(id);
+      symbol = signal.symbol;
+      const now = new Date();
+      if (this.mode === 'LIVE' && this.killSwitch) {
+        throw new BadRequestException('Kill switch is ON — live execution blocked');
+      }
+      const dd = this.drawdown();
+      if (dd.dailyHalt || dd.weeklyHalt) {
+        throw new BadRequestException('Drawdown halt — no new trades');
+      }
+      const loaded = await loadMarkets(now, true);
+      const market = loaded.markets.find((m) => m.spec.symbol === signal.symbol);
+      if (!market) throw new BadRequestException('No live market for this pair');
+      const live = recheckLive({ signal, market, now, requestedSide: side, mode: this.mode });
+      if (!live.ok || !live.quote) {
+        throw new BadRequestException(live.blockers.join('; ') || 'Live recheck failed');
+      }
+      const broker = brokerExecutionChecks({
+        mode: this.mode,
+        killSwitch: this.killSwitch,
+        liveBlockedReason: 'No live FX broker adapter is connected. Paper/demo only.',
+        quote: live.quote,
+      });
+      if (broker.length) throw new BadRequestException(broker.join('; '));
+      const fill = side === 'BUY' ? live.quote.ask : live.quote.bid;
+      const position = openProtectedPosition({
+        signal,
+        fill,
+        lots: signal.suggestedLots,
+        mode: this.mode,
+        atr: market.atr ?? 0,
+        now,
+      });
+      this.positions.push(position);
+      signal.pipeline.stage = 'EXECUTE';
+      signal.expiresAt = now.toISOString();
+      await this.notifyTradeResult(user ?? null, {
+        kind: 'TRADE_SUCCEEDED',
+        eventId: `${attemptId}:success`,
+        symbol,
+        side,
+        assetClass: 'FOREX',
+        executionMode: this.mode === 'LIVE' ? 'LIVE' : 'PAPER',
+        tokenQuantity: position.lotsOriginal,
+        entryPrice: fill,
+      });
+      return { position, fill, disclaimer: FOREX_DISCLAIMER };
+    } catch (err) {
+      await this.notifyTradeResult(user ?? null, {
+        kind: 'TRADE_FAILED',
+        eventId: `${attemptId}:failed`,
+        symbol,
+        side,
+        assetClass: 'FOREX',
+        executionMode: this.mode === 'LIVE' ? 'LIVE' : 'PAPER',
+        reason: err instanceof Error ? err.message : 'Forex trade failed',
+      });
+      throw err;
     }
-    const loaded = await loadMarkets(now, true);
-    const market = loaded.markets.find((m) => m.spec.symbol === signal.symbol);
-    if (!market) throw new BadRequestException('No live market for this pair');
-    const live = recheckLive({ signal, market, now, requestedSide: side });
-    if (!live.ok || !live.quote) {
-      throw new BadRequestException(live.blockers.join('; ') || 'Live recheck failed');
-    }
-    const broker = brokerExecutionChecks({
-      mode: this.mode,
-      killSwitch: this.killSwitch,
-      liveBlockedReason: 'No live FX broker adapter is connected. Paper/demo only.',
-      quote: live.quote,
-    });
-    if (broker.length) throw new BadRequestException(broker.join('; '));
-    const fill = side === 'BUY' ? live.quote.ask : live.quote.bid;
-    const position = openProtectedPosition({
-      signal,
-      fill,
-      lots: signal.suggestedLots,
-      mode: this.mode,
-      atr: market.atr ?? 0,
-      now,
-    });
-    this.positions.push(position);
-    signal.pipeline.stage = 'EXECUTE';
-    signal.expiresAt = now.toISOString();
-    return { position, fill, disclaimer: FOREX_DISCLAIMER };
   }
 
   positionsList() {
     return { items: this.openPositions(), count: this.openPositions().length };
   }
 
-  async tick() {
+  async tick(user?: IUser) {
     const now = new Date();
     const loaded = await loadMarkets(now);
-    const events = await this.tickPositions(loaded.markets, now);
+    const events = await this.tickPositions(loaded.markets, now, user);
     return { events, positions: this.openPositions(), journal: this.journal.slice(-20) };
   }
 
-  async close(id: string) {
-    const pos = this.positions.find((p) => p.id === id && p.lotsOpen > 0);
-    if (!pos) throw new NotFoundException('Position not found');
-    const now = new Date();
-    const loaded = await loadMarkets(now, true);
-    const market = loaded.markets.find((m) => m.spec.symbol === pos.symbol);
-    if (!market) throw new BadRequestException('No live market');
-    const mark = pos.side === 'BUY' ? market.quote.bid : market.quote.ask;
-    pos.lotsOpen = 0;
-    const entry = toJournal(pos, mark, 'MANUAL_CLOSE', now);
-    this.applyClose(pos, entry);
-    return { position: pos, journal: entry };
+  async close(id: string, user?: IUser) {
+    const attemptId = `forex:close:${id}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
+    let symbol = 'FOREX';
+    try {
+      const pos = this.positions.find((p) => p.id === id && p.lotsOpen > 0);
+      if (!pos) throw new NotFoundException('Position not found');
+      symbol = pos.symbol;
+      const now = new Date();
+      const loaded = await loadMarkets(now, true);
+      const market = loaded.markets.find((m) => m.spec.symbol === pos.symbol);
+      if (!market) throw new BadRequestException('No live market');
+      const mark = pos.side === 'BUY' ? market.quote.bid : market.quote.ask;
+      const lotsToClose = pos.lotsOpen;
+      pos.realizedUsd += pnlUsd({
+        spec: getPair(pos.symbol),
+        side: pos.side,
+        entry: pos.entry,
+        exit: mark,
+        lots: lotsToClose,
+      });
+      pos.lotsOpen = 0;
+      const entry = toJournal(pos, mark, 'MANUAL_CLOSE', now);
+      this.applyClose(pos, entry);
+      await this.notifyTradeResult(user ?? null, {
+        kind: completionKindForPnl(entry.pnlUsd) ?? 'TRADE_LOSS',
+        eventId: `${attemptId}:result`,
+        symbol,
+        side: entry.side,
+        assetClass: 'FOREX',
+        executionMode: this.mode === 'LIVE' ? 'LIVE' : 'PAPER',
+        tokenQuantity: entry.lots,
+        entryPrice: entry.entry,
+        exitPrice: entry.exit,
+        pnlUsd: entry.pnlUsd,
+        roiPct: entry.entry > 0
+          ? ((entry.exit - entry.entry) / entry.entry) * (entry.side === 'BUY' ? 100 : -100)
+          : undefined,
+        reason: entry.exitReason,
+        tradeId: entry.positionId,
+      });
+      return { position: pos, journal: entry };
+    } catch (err) {
+      await this.notifyTradeResult(user ?? null, {
+        kind: 'TRADE_FAILED',
+        eventId: `${attemptId}:failed`,
+        symbol,
+        side: 'SELL',
+        assetClass: 'FOREX',
+        executionMode: this.mode === 'LIVE' ? 'LIVE' : 'PAPER',
+        reason: err instanceof Error ? err.message : 'Forex close failed',
+      });
+      throw err;
+    }
   }
 
   journalList() {
@@ -310,7 +459,7 @@ export class ForexBotService implements OnModuleInit, OnModuleDestroy {
     if (this.signals.length > 80) this.signals = this.signals.slice(-80);
   }
 
-  private async tickPositions(markets: PairMarket[], now: Date) {
+  private async tickPositions(markets: PairMarket[], now: Date, user?: IUser) {
     const events: string[] = [];
     const bySym = new Map(markets.map((m) => [m.spec.symbol, m]));
     for (const pos of this.openPositions()) {
@@ -331,6 +480,23 @@ export class ForexBotService implements OnModuleInit, OnModuleDestroy {
             detail: `${pos.side} closed · ${result.exitReason} @ ${result.exitPrice}`,
           });
         }
+        await this.notifyTradeResult(user ?? null, {
+          kind: completionKindForPnl(entry.pnlUsd) ?? 'TRADE_LOSS',
+          eventId: `forex:result:${entry.id}`,
+          symbol: entry.symbol,
+          side: entry.side,
+          assetClass: 'FOREX',
+          executionMode: pos.mode === 'LIVE' ? 'LIVE' : 'PAPER',
+          tokenQuantity: entry.lots,
+          entryPrice: entry.entry,
+          exitPrice: entry.exit,
+          pnlUsd: entry.pnlUsd,
+          roiPct: entry.entry > 0
+            ? ((entry.exit - entry.entry) / entry.entry) * (entry.side === 'BUY' ? 100 : -100)
+            : undefined,
+          reason: entry.exitReason,
+          tradeId: entry.positionId,
+        });
       }
     }
     return events;
@@ -339,6 +505,19 @@ export class ForexBotService implements OnModuleInit, OnModuleDestroy {
   private applyClose(pos: FxPosition, entry: JournalEntry) {
     this.balance = Number((this.balance + pos.realizedUsd).toFixed(2));
     this.journal.push(entry);
+  }
+
+  private async notifyTradeResult(
+    user: IUser | null,
+    payload: Parameters<TradeNotificationsService['emit']>[1],
+  ) {
+    try {
+      await this.tradeNotifications.emit(user, payload);
+    } catch (err) {
+      this.logger.warn(
+        `Trade result notification failed: ${err instanceof Error ? err.message : err}`,
+      );
+    }
   }
 
   private dailyPnl() {
@@ -386,6 +565,49 @@ export class ForexBotService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  private async autoFillPassedSetups(
+    board: Array<{
+      symbol: string;
+      bias: string;
+      tradeable: boolean;
+      signalId: string | null;
+    }>,
+  ) {
+    const s = this.settings.getSettings();
+    if (!s.autoTradeForex || s.emergencyStop) return;
+    const dd = this.drawdown();
+    if (dd.dailyHalt || dd.weeklyHalt) return;
+
+    for (const row of board) {
+      if (!row.tradeable || !row.signalId) continue;
+      if (row.bias !== 'BUY' && row.bias !== 'SELL') continue;
+      if (this.autoFilled.has(row.signalId)) continue;
+      if (this.openPositions().some((p) => p.symbol === row.symbol)) continue;
+      try {
+        const result = await this.execute(row.signalId, row.bias as 'BUY' | 'SELL');
+        this.autoFilled.add(row.signalId);
+        this.logger.log(`FX demo auto ${row.bias} ${row.symbol} @ ${result.fill}`);
+        await this.notifications.notify(
+          `FX AUTO ${row.bias} ${row.symbol}`,
+          [
+            `Demo ${row.bias} filled at ${result.fill} because every hard test passed.`,
+            'Auto-trade is paper/demo only. Tests failed = no fill. Not financial advice.',
+            FOREX_DISCLAIMER,
+          ].join('\n'),
+        );
+      } catch (err) {
+        this.logger.warn(
+          `FX demo auto skipped ${row.symbol}: ${err instanceof Error ? err.message : 'error'}`,
+        );
+      }
+    }
+    if (this.autoFilled.size > 60) {
+      const keep = [...this.autoFilled].slice(-30);
+      this.autoFilled.clear();
+      for (const id of keep) this.autoFilled.add(id);
+    }
+  }
+
   private async alertBoard(board: Array<{
     symbol: string;
     bias: string;
@@ -394,6 +616,7 @@ export class ForexBotService implements OnModuleInit, OnModuleDestroy {
     setupQuality: number;
     mid: number;
     rsi: number | null;
+    tradeable: boolean;
     zone: { low: number; high: number } | null;
     stopLoss: number | null;
     takeProfit1: number | null;
@@ -401,9 +624,7 @@ export class ForexBotService implements OnModuleInit, OnModuleDestroy {
     reasons: string[];
   }>) {
     for (const row of board) {
-      if (row.bias !== 'BUY' && row.bias !== 'SELL') continue;
-      const lean = row.bias === 'BUY' ? row.buyPct : row.sellPct;
-      if (lean < 60) continue;
+      if (!shouldAlertFx(row)) continue;
       try {
         await this.notifications.notifyFxSetup({
           symbol: row.symbol,
@@ -418,7 +639,7 @@ export class ForexBotService implements OnModuleInit, OnModuleDestroy {
           takeProfit1: row.takeProfit1,
           takeProfit2: row.takeProfit2,
           rsi: row.rsi,
-          reason: row.reasons[0] ?? `${row.bias} lean ${lean}%`,
+          reason: row.reasons[0] ?? `${row.bias} lean ${row.bias === 'BUY' ? row.buyPct : row.sellPct}%`,
         });
       } catch (err) {
         this.logger.warn(

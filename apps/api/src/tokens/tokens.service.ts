@@ -258,8 +258,8 @@ export class TokensService {
             : 'dexscreener';
 
       const ranked = [...merged.values()]
-        .sort((a, b) => (b.volume24h ?? 0) - (a.volume24h ?? 0))
-        .slice(0, limit);
+        .sort((a, b) => (b.volume24h ?? 0) - (a.volume24h ?? 0) || (b.liquidityUsd ?? 0) - (a.liquidityUsd ?? 0))
+        .slice(0, Math.min(Math.max(limit * 3, 24), 45));
 
       const enriched: ScannerToken[] = [];
       const concurrency = 4;
@@ -281,11 +281,11 @@ export class TokensService {
         enriched.push(...rows);
       }
 
-      const sorted = this.sortTokens(enriched, params.sort ?? 'volume');
+      const sorted = this.sortTokens(enriched, params.sort ?? 'safety').slice(0, limit);
 
       if (!sorted.length) {
         const cached = this.cachedScan(
-          'No live 1–10 day coins right now — showing last saved list.',
+          'No live 1 min–30 day coins right now — showing last saved list.',
         );
         if (cached) return cached;
       }
@@ -296,7 +296,7 @@ export class TokensService {
         count: sorted.length,
         note: searching
           ? undefined
-          : 'Showing coins 1–10 days old. Search by mint to look up any coin.',
+          : 'Showing 1 min–30 day coins. Scam / honeypot flags are ranked last. Search by mint to look up any coin.',
       };
       if (sorted.length) {
         this.lastScan = { ...payload, at: Date.now() };
@@ -434,21 +434,29 @@ export class TokensService {
 
   private sortTokens(items: ScannerToken[], sort: string): ScannerToken[] {
     const copy = [...items];
-    switch (sort) {
-      case 'liquidity':
-        return copy.sort((a, b) => (b.liquidityUsd ?? 0) - (a.liquidityUsd ?? 0));
-      case 'marketCap':
-        return copy.sort((a, b) => (b.marketCap ?? 0) - (a.marketCap ?? 0));
-      case 'priceChange':
-        return copy.sort(
-          (a, b) => (b.priceChange24h ?? 0) - (a.priceChange24h ?? 0),
-        );
-      case 'safety':
-        return copy.sort((a, b) => (b.safetyScore ?? -1) - (a.safetyScore ?? -1));
-      case 'volume':
-      default:
-        return copy.sort((a, b) => (b.volume24h ?? 0) - (a.volume24h ?? 0));
-    }
+    const bySort = (() => {
+      switch (sort) {
+        case 'liquidity':
+          return copy.sort((a, b) => (b.liquidityUsd ?? 0) - (a.liquidityUsd ?? 0));
+        case 'marketCap':
+          return copy.sort((a, b) => (b.marketCap ?? 0) - (a.marketCap ?? 0));
+        case 'priceChange':
+          return copy.sort((a, b) => (b.priceChange24h ?? 0) - (a.priceChange24h ?? 0));
+        case 'volume':
+          return copy.sort((a, b) => (b.volume24h ?? 0) - (a.volume24h ?? 0));
+        case 'safety':
+        default:
+          return copy.sort((a, b) => (b.safetyScore ?? -1) - (a.safetyScore ?? -1));
+      }
+    })();
+    return bySort.sort((a, b) => {
+      const scamA = a.criticalWarning ? 1 : 0;
+      const scamB = b.criticalWarning ? 1 : 0;
+      if (scamA !== scamB) return scamA - scamB;
+      const liqA = (a.liquidityUsd ?? 0) < 8_000 ? 1 : 0;
+      const liqB = (b.liquidityUsd ?? 0) < 8_000 ? 1 : 0;
+      return liqA - liqB;
+    });
   }
 
   private async persistBestEffort(items: ScannerToken[]): Promise<void> {

@@ -14,7 +14,7 @@ const LINKS: Array<{
   route: keyof MoreStackParamList;
 }> = [
   {
-    title: 'Paper trading',
+    title: 'Demo trading',
     subtitle: 'Simulated fills · $1,000 default · no chain txs',
     route: 'Paper',
   },
@@ -59,6 +59,12 @@ export function MoreScreen({ navigation }: Props) {
       | undefined;
     root?.navigate('ForexBot');
   };
+  const openRoot = (route: 'Portfolio' | 'TradeHistory' | 'Notifications') => {
+    const root = navigation.getParent()?.getParent() as
+      | NativeStackNavigationProp<RootStackParamList>
+      | undefined;
+    root?.navigate(route);
+  };
 
   return (
     <ScrollView
@@ -77,7 +83,7 @@ export function MoreScreen({ navigation }: Props) {
       >
         <Text style={common.cardTitle}>FX BOT</Text>
         <Text style={common.cardBody}>
-          Scan → filter → score → you click BUY/SELL → live recheck → paper fill. Kill switch on by default.
+          Scan → filter → score → you click BUY/SELL → live recheck → demo fill. Kill switch blocks live only.
         </Text>
         <Text style={{ color: colors.info, marginTop: spacing.sm, fontWeight: '700' }}>
           Open →
@@ -94,6 +100,30 @@ export function MoreScreen({ navigation }: Props) {
         <Text style={{ color: colors.accent, marginTop: spacing.sm, fontWeight: '700' }}>
           Open →
         </Text>
+      </Pressable>
+      <Pressable
+        onPress={() => openRoot('Portfolio')}
+        style={({ pressed }) => [common.card, pressed && { backgroundColor: colors.surfaceHover }]}
+      >
+        <Text style={common.cardTitle}>Portfolio</Text>
+        <Text style={common.cardBody}>Live positions · avg entry · unrealized PnL after confirmed trades</Text>
+        <Text style={{ color: colors.accent, marginTop: spacing.sm, fontWeight: '700' }}>Open →</Text>
+      </Pressable>
+      <Pressable
+        onPress={() => openRoot('TradeHistory')}
+        style={({ pressed }) => [common.card, pressed && { backgroundColor: colors.surfaceHover }]}
+      >
+        <Text style={common.cardTitle}>Trade history</Text>
+        <Text style={common.cardBody}>In-app buys and sells with fees, hash, and confirmation status</Text>
+        <Text style={{ color: colors.accent, marginTop: spacing.sm, fontWeight: '700' }}>Open →</Text>
+      </Pressable>
+      <Pressable
+        onPress={() => openRoot('Notifications')}
+        style={({ pressed }) => [common.card, pressed && { backgroundColor: colors.surfaceHover }]}
+      >
+        <Text style={common.cardTitle}>Notifications</Text>
+        <Text style={common.cardBody}>Trade, take-profit, stop-loss, pending and failed events</Text>
+        <Text style={{ color: colors.accent, marginTop: spacing.sm, fontWeight: '700' }}>Open →</Text>
       </Pressable>
       {LINKS.map((link) => (
         <Pressable

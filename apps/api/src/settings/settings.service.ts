@@ -20,6 +20,15 @@ export type AppSettings = {
   notifyFxSetups: boolean;
   notifyPaperExits: boolean;
   notifyRealTrades: boolean;
+  notifyInApp: boolean;
+  notifyPush: boolean;
+  notifyBuyConfirms: boolean;
+  notifySellConfirms: boolean;
+  notifyTradeFailed: boolean;
+  notifyTakeProfit: boolean;
+  notifyStopLoss: boolean;
+  expoPushToken: string | null;
+  walletProvider: 'phantom' | 'solflare' | 'manual' | null;
   telegramEnabled: boolean;
   whatsappEnabled: boolean;
   emailEnabled: boolean;
@@ -27,6 +36,12 @@ export type AppSettings = {
   killSwitch: boolean;
   emergencyStop: boolean;
   autoTradingEnabled: boolean;
+  /** Demo/paper auto-fill for memecoin BUY setups that pass every hard test. */
+  autoTradeMemecoins: boolean;
+  /** Token addresses whose passing BUY setups may be auto-filled. */
+  autoTradeMemecoinAddresses: string[];
+  /** Demo/paper auto-fill for FX setups that pass every hard test. */
+  autoTradeForex: boolean;
   /** Public Solana address only — never a private key */
   walletPublicKey: string | null;
   /** User-added smart money wallets (public keys only). */
@@ -73,6 +88,15 @@ function defaultSettings(): AppSettings {
     notifyFxSetups: true,
     notifyPaperExits: true,
     notifyRealTrades: true,
+    notifyInApp: true,
+    notifyPush: true,
+    notifyBuyConfirms: true,
+    notifySellConfirms: true,
+    notifyTradeFailed: true,
+    notifyTakeProfit: true,
+    notifyStopLoss: true,
+    expoPushToken: null,
+    walletProvider: null,
     telegramEnabled: true,
     whatsappEnabled: false,
     emailEnabled: true,
@@ -80,6 +104,9 @@ function defaultSettings(): AppSettings {
     killSwitch: DEFAULT_TRADING_FLAGS.killSwitch,
     emergencyStop: false,
     autoTradingEnabled: false,
+    autoTradeMemecoins: false,
+    autoTradeMemecoinAddresses: [],
+    autoTradeForex: false,
     walletPublicKey: null,
     trackedWallets: [],
     maxSlippageBps: 300,
@@ -146,9 +173,26 @@ export class SettingsService {
       next.tradingMode = this.settings.tradingMode;
     }
 
-    // Auto trading always stays OFF via this path
+    // Real-money AUTO stays OFF via this path. Demo auto toggles are allowed below.
     if (patch.autoTradingEnabled === true) {
       next.autoTradingEnabled = false;
+    }
+
+    if (patch.autoTradeMemecoins !== undefined) {
+      next.autoTradeMemecoins =
+        Boolean(patch.autoTradeMemecoins) &&
+        next.autoTradeMemecoinAddresses.length > 0 &&
+        !next.emergencyStop;
+    }
+    if (patch.autoTradeMemecoinAddresses !== undefined) {
+      next.autoTradeMemecoinAddresses = this.sanitizeMemecoinAddresses(
+        patch.autoTradeMemecoinAddresses,
+      );
+      next.autoTradeMemecoins =
+        next.autoTradeMemecoinAddresses.length > 0 && !next.emergencyStop;
+    }
+    if (patch.autoTradeForex !== undefined) {
+      next.autoTradeForex = Boolean(patch.autoTradeForex) && !next.emergencyStop;
     }
 
     next.axiomRequiredForAutoTrading = true;
@@ -194,6 +238,9 @@ export class SettingsService {
       ...this.settings,
       emergencyStop: true,
       autoTradingEnabled: false,
+      autoTradeMemecoins: false,
+      autoTradeMemecoinAddresses: [],
+      autoTradeForex: false,
       killSwitch: true,
       tradingMode:
         this.settings.tradingMode === TradingMode.AUTO
@@ -416,12 +463,28 @@ export class SettingsService {
       notifyFxSetups: doc.notifyFxSetups !== false,
       notifyPaperExits: doc.notifyPaperExits,
       notifyRealTrades: doc.notifyRealTrades,
+      notifyInApp: doc.notifyInApp !== false,
+      notifyPush: doc.notifyPush !== false,
+      notifyBuyConfirms: doc.notifyBuyConfirms !== false,
+      notifySellConfirms: doc.notifySellConfirms !== false,
+      notifyTradeFailed: doc.notifyTradeFailed !== false,
+      notifyTakeProfit: doc.notifyTakeProfit !== false,
+      notifyStopLoss: doc.notifyStopLoss !== false,
+      expoPushToken: doc.expoPushToken ?? null,
+      walletProvider: (doc.walletProvider as AppSettings['walletProvider']) ?? null,
       telegramEnabled: doc.telegramEnabled,
       whatsappEnabled: Boolean(doc.whatsappEnabled),
       emailEnabled: Boolean(doc.emailEnabled),
       killSwitch: doc.killSwitch,
       emergencyStop: doc.emergencyStop,
       autoTradingEnabled: false,
+      autoTradeMemecoinAddresses: this.sanitizeMemecoinAddresses(
+        doc.autoTradeMemecoinAddresses ?? [],
+      ),
+      autoTradeMemecoins:
+        Boolean(doc.autoTradeMemecoins) &&
+        this.sanitizeMemecoinAddresses(doc.autoTradeMemecoinAddresses ?? []).length > 0,
+      autoTradeForex: Boolean(doc.autoTradeForex),
       walletPublicKey: doc.walletPublicKey,
       trackedWallets: this.sanitizeTracked(
         (doc.trackedWallets ?? []) as Array<{ address: string; label: string }>,
@@ -455,12 +518,24 @@ export class SettingsService {
         notifyFxSetups: s.notifyFxSetups,
         notifyPaperExits: s.notifyPaperExits,
         notifyRealTrades: s.notifyRealTrades,
+        notifyInApp: s.notifyInApp,
+        notifyPush: s.notifyPush,
+        notifyBuyConfirms: s.notifyBuyConfirms,
+        notifySellConfirms: s.notifySellConfirms,
+        notifyTradeFailed: s.notifyTradeFailed,
+        notifyTakeProfit: s.notifyTakeProfit,
+        notifyStopLoss: s.notifyStopLoss,
+        expoPushToken: s.expoPushToken,
+        walletProvider: s.walletProvider,
         telegramEnabled: s.telegramEnabled,
         whatsappEnabled: s.whatsappEnabled,
         emailEnabled: s.emailEnabled,
         killSwitch: s.killSwitch,
         emergencyStop: s.emergencyStop,
         autoTradingEnabled: false,
+        autoTradeMemecoins: s.autoTradeMemecoinAddresses.length > 0,
+        autoTradeMemecoinAddresses: s.autoTradeMemecoinAddresses,
+        autoTradeForex: s.autoTradeForex,
         walletPublicKey: s.walletPublicKey,
         trackedWallets: s.trackedWallets,
         maxSlippageBps: s.maxSlippageBps,
@@ -468,5 +543,19 @@ export class SettingsService {
       },
       { upsert: true },
     );
+  }
+
+  private sanitizeMemecoinAddresses(addresses: string[] | undefined): string[] {
+    if (!Array.isArray(addresses)) return [];
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const address of addresses) {
+      const value = typeof address === 'string' ? address.trim() : '';
+      if (!looksLikeSolanaAddress(value) || seen.has(value)) continue;
+      seen.add(value);
+      out.push(value);
+      if (out.length >= 100) break;
+    }
+    return out;
   }
 }

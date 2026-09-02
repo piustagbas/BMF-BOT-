@@ -28,7 +28,16 @@ export {
   USDC_MINT,
 } from './jupiter';
 export type { JupiterSwapQuote, JupiterSwapTransaction } from './types';
-export { pingSolanaRpc, getSolanaSlot, getTokenDecimals, getTokenAccountsByOwner } from './solana-rpc';
+export {
+  pingSolanaRpc,
+  getSolanaSlot,
+  getTokenDecimals,
+  getTokenAccountsByOwner,
+  getSolBalanceLamports,
+  getSplTokenUiBalance,
+  getSignatureStatuses,
+  waitForSignatureConfirmation,
+} from './solana-rpc';
 export { fetchAxiomToken, pingAxiom } from './axiom';
 export { comparePrices } from './consensus';
 export {

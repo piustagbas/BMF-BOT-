@@ -286,7 +286,7 @@ export function styleFit(market: BetMarket, home: TeamSnapshot, away: TeamSnapsh
   }
 }
 
-function marketRank(
+export function marketRank(
   m: { market: BetMarket; modelProbability: number; analysisScore: number; sampleDeliveryRate: number | null },
   home: TeamSnapshot,
   away: TeamSnapshot,
@@ -340,11 +340,12 @@ export function setRecommended(
     whyQualified: [...(extra?.why ?? []), ...hit.whyQualified].slice(0, 6),
     reason: extra?.reason ?? hit.reason,
   });
-  return {
+  const next: FixtureAnalysis = {
     ...analysis,
     recommended,
     markets: analysis.markets.map((m) => (m.market === recommended.market ? recommended : m)),
   };
+  return { ...next, cardLines: cardMarketLines(next) };
 }
 
 function asPlay(m: MarketAnalysis): MarketAnalysis {
@@ -550,6 +551,12 @@ export function analyzeFixture(input: {
   lambdaA = Math.max(0.4, Math.min(3.1, lambdaA));
   const grid = scoreMatrix(lambdaH, lambdaA);
   const multiScore = buildMultiScorePick(grid, input.home.name, input.away.name, sig.homeStrong, sig.awayStrong);
+  const htGrid = scoreMatrix(lambdaH * 0.45, lambdaA * 0.45);
+  const pHtOver05 = sumWhere(htGrid, (h, a) => h + a >= 1);
+  const halfTime = {
+    label: 'Over 0.5',
+    pct: Math.round(pHtOver05 * 100),
+  };
 
   const pHome = sumWhere(grid, (h, a) => h > a);
   const pDraw = sumWhere(grid, (h, a) => h === a);
@@ -750,7 +757,7 @@ export function analyzeFixture(input: {
     .filter(Boolean)
     .sort((a, b) => marketRank(b, input.home, input.away) - marketRank(a, input.home, input.away))[0];
 
-  return {
+  const analysis: FixtureAnalysis = {
     fixture: input.fixture,
     popularity: {
       home: input.home.popular,
@@ -795,6 +802,7 @@ export function analyzeFixture(input: {
           reason: `Form pick: ${half.label} (${half.analysisScore}/100, model ${half.modelProbability}%). Not a guarantee.`,
         }
       : null,
+    halfTime,
     markets: marketsOut,
     recommended,
     rankedMarkets,
@@ -802,6 +810,185 @@ export function analyzeFixture(input: {
     avoidReasons,
     disclaimer: BET_DISCLAIMER,
   };
+  return { ...analysis, cardLines: cardMarketLines(analysis) };
+}
+
+export type { CardMarketLine } from './types';
+
+function shortMarketDetail(m: MarketAnalysis): string {
+  if (m.market === 'HOME') return 'Home to win';
+  if (m.market === 'AWAY') return 'Away to win';
+  if (m.market === 'BTTS_YES') return 'BTTS yes';
+  if (m.market === 'BTTS_NO') return 'BTTS no';
+  if (m.market === 'OVER_2_5') return 'Over 2.5';
+  if (m.market === 'UNDER_2_5') return 'Under 2.5';
+  return m.label
+    .replace(/\s+goals$/i, '')
+    .replace(/^Double chance /i, 'DC ')
+    .replace(/\s+corners$/i, '')
+    .replace(/\s+cards$/i, '');
+}
+
+function linePct(m: MarketAnalysis): number {
+  const n = Math.round(m.analysisScore ?? m.safetyScore ?? m.modelProbability);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function bestIn(markets: MarketAnalysis[], ids: BetMarket[]): MarketAnalysis | null {
+  const rows = markets.filter((m) => ids.includes(m.market));
+  if (!rows.length) return null;
+  return [...rows].sort((a, b) => linePct(b) - linePct(a))[0] ?? null;
+}
+
+const EXTRA_BUCKETS: BetMarket[][] = [
+  ['BTTS_YES', 'BTTS_NO'],
+  ['OVER_2_5', 'UNDER_2_5'],
+  ['OVER_1_5', 'UNDER_1_5'],
+  ['DC_1X', 'DC_X2', 'DC_12'],
+  ['HOME_OVER_1_5', 'AWAY_OVER_1_5'],
+  ['OVER_10_5_CORNERS', 'UNDER_10_5_CORNERS'],
+  ['HOME', 'DRAW', 'AWAY', 'DNB_HOME', 'DNB_AWAY'],
+  ['OVER_3_5', 'UNDER_3_5'],
+  ['HOME_TO_SCORE', 'AWAY_TO_SCORE'],
+  ['OVER_3_5_CARDS', 'UNDER_3_5_CARDS'],
+];
+
+function cardFamilyKey(market: BetMarket): string {
+  if (market === 'HOME' || market === 'DRAW' || market === 'AWAY') return 'result';
+  if (market.startsWith('DC_') || market.startsWith('DNB_') || market.startsWith('AH_')) return 'result';
+  if (market.startsWith('BTTS')) return 'btts';
+  if (market === 'OVER_2_5' || market === 'UNDER_2_5') return 'ou25';
+  if (market === 'OVER_1_5' || market === 'UNDER_1_5') return 'ou15';
+  if (market === 'OVER_3_5' || market === 'UNDER_3_5') return 'ou35';
+  if (market === 'OVER_0_5' || market === 'UNDER_0_5') return 'ou05';
+  if (market === 'OVER_4_5' || market === 'UNDER_4_5') return 'ou45';
+  if (market.includes('CORNER')) return 'corners';
+  if (market.includes('CARD')) return 'cards';
+  if (market.includes('PLAYER')) return 'player';
+  if (market.startsWith('HOME_')) return 'home-goals';
+  if (market.startsWith('AWAY_')) return 'away-goals';
+  return market;
+}
+
+function extraCardRow(m: MarketAnalysis): { family: string; pct: number; detail: string } {
+  const pct = linePct(m);
+  switch (m.market) {
+    case 'BTTS_YES':
+      return { family: 'BTTS', pct, detail: 'yes' };
+    case 'BTTS_NO':
+      return { family: 'BTTS', pct, detail: 'no' };
+    case 'OVER_2_5':
+      return { family: 'Over 2.5', pct, detail: 'Yes' };
+    case 'UNDER_2_5':
+      return { family: 'Under 2.5', pct, detail: 'Yes' };
+    case 'OVER_1_5':
+      return { family: 'Over 1.5', pct, detail: 'Yes' };
+    case 'UNDER_1_5':
+      return { family: 'Under 1.5', pct, detail: 'Yes' };
+    case 'OVER_3_5':
+      return { family: 'Over 3.5', pct, detail: 'Yes' };
+    case 'UNDER_3_5':
+      return { family: 'Under 3.5', pct, detail: 'Yes' };
+    case 'OVER_0_5':
+      return { family: 'Over 0.5', pct, detail: 'Yes' };
+    case 'HOME':
+      return { family: '1X2', pct, detail: 'Home to win' };
+    case 'DRAW':
+      return { family: '1X2', pct, detail: 'Draw' };
+    case 'AWAY':
+      return { family: '1X2', pct, detail: 'Away to win' };
+    case 'DC_1X':
+      return { family: 'Double chance', pct, detail: '1X' };
+    case 'DC_X2':
+      return { family: 'Double chance', pct, detail: 'X2' };
+    case 'DC_12':
+      return { family: 'Double chance', pct, detail: '12' };
+    case 'DNB_HOME':
+      return { family: 'Draw no bet', pct, detail: 'Home' };
+    case 'DNB_AWAY':
+      return { family: 'Draw no bet', pct, detail: 'Away' };
+    case 'HOME_OVER_1_5':
+      return { family: 'Home over 1.5', pct, detail: 'Yes' };
+    case 'AWAY_OVER_1_5':
+      return { family: 'Away over 1.5', pct, detail: 'Yes' };
+    case 'HOME_TO_SCORE':
+      return { family: 'Home to score', pct, detail: 'Yes' };
+    case 'AWAY_TO_SCORE':
+      return { family: 'Away to score', pct, detail: 'Yes' };
+    case 'OVER_10_5_CORNERS':
+      return { family: 'Corners', pct, detail: 'Over 10.5' };
+    case 'UNDER_10_5_CORNERS':
+      return { family: 'Corners', pct, detail: 'Under 10.5' };
+    case 'OVER_3_5_CARDS':
+      return { family: 'Cards', pct, detail: 'Over 3.5' };
+    case 'UNDER_3_5_CARDS':
+      return { family: 'Cards', pct, detail: 'Under 3.5' };
+    case 'HOME_PLAYER_SCORE':
+      return { family: 'Player to score', pct, detail: 'Home' };
+    case 'AWAY_PLAYER_SCORE':
+      return { family: 'Player to score', pct, detail: 'Away' };
+    default:
+      return { family: shortMarketDetail(m), pct, detail: m.label || 'Yes' };
+  }
+}
+
+function safestDetail(m: MarketAnalysis): string {
+  const row = extraCardRow(m);
+  if (/^btts$/i.test(row.family)) return `BTTS ${row.detail}`.trim();
+  if (row.detail && !/^(yes|no)$/i.test(row.detail.trim()) && row.family.toLowerCase() !== row.detail.toLowerCase()) {
+    return `${row.family} ${row.detail}`.trim();
+  }
+  return row.family || shortMarketDetail(m);
+}
+
+/**
+ * Safest plus this match’s next-best other markets (each with % and value).
+ * The Safest line is always `recommended` — never the highest raw analysisScore.
+ * Multiscore is not included — that line belongs on the Multiscore tab.
+ */
+export function cardMarketLines(analysis: FixtureAnalysis): Array<{ family: string; pct: number; detail: string }> {
+  const lines: Array<{ family: string; pct: number; detail: string }> = [];
+  const used = new Set<string>();
+  const rec = analysis.recommended;
+  if (rec) {
+    lines.push({
+      family: 'Safest',
+      pct: linePct(rec),
+      detail: safestDetail(rec),
+    });
+    used.add(cardFamilyKey(rec.market));
+  }
+  for (const bucket of EXTRA_BUCKETS) {
+    if (lines.length >= 4) break;
+    const best = bestIn(analysis.markets, bucket);
+    if (!best) continue;
+    const key = cardFamilyKey(best.market);
+    if (used.has(key)) continue;
+    used.add(key);
+    const row = extraCardRow(best);
+    if (!row.detail.trim()) continue;
+    lines.push(row);
+  }
+  return lines;
+}
+
+/** Fixture detail: recommended (Safest) first, then the same rank order used to pick it. */
+export function orderPlayableMarkets(
+  markets: Array<{ market: BetMarket; category: string; analysisScore?: number; safetyScore?: number }>,
+  recommended: { market: BetMarket } | null,
+  rankedMarkets?: BetMarket[],
+): typeof markets {
+  const playable = markets.filter((m) => m.category !== 'AVOID');
+  const rankOf = (market: BetMarket) => {
+    if (recommended && market === recommended.market) return -1;
+    const i = rankedMarkets?.indexOf(market);
+    return i != null && i >= 0 ? i : 999;
+  };
+  return [...playable].sort(
+    (a, b) =>
+      rankOf(a.market) - rankOf(b.market) ||
+      (b.analysisScore ?? b.safetyScore ?? 0) - (a.analysisScore ?? a.safetyScore ?? 0),
+  );
 }
 
 function marketFamily(market: BetMarket): string {
@@ -831,7 +1018,7 @@ function marketFamily(market: BetMarket): string {
   return market;
 }
 
-/** Cap how often the same market family appears on a pack so it is not all Over 2.5. */
+/** Booking/acca only: spread markets across a slip. Never use this for the per-match Safest card. */
 export function diversifyRecommended(analyses: FixtureAnalysis[]): FixtureAnalysis[] {
   const usedMarket = new Map<string, number>();
   const usedFamily = new Map<string, number>();

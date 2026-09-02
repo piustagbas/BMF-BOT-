@@ -177,6 +177,9 @@ export type HealthPayload = {
 export type AutoTradingStatus = {
   tradingMode: string;
   autoTradingEnabled: boolean;
+  autoTradeMemecoins?: boolean;
+  autoTradeMemecoinAddresses?: string[];
+  autoTradeForex?: boolean;
   killSwitch: boolean;
   emergencyStop: boolean;
   walletPublicKey: string | null;
@@ -346,6 +349,7 @@ export type SignalItem = {
     required: number;
     available: number;
     summary: string;
+    testsPassed?: boolean;
     items: Array<{
       key: string;
       label: string;
@@ -625,6 +629,13 @@ export type AppSettings = {
   notifyFxSetups: boolean;
   notifyPaperExits: boolean;
   notifyRealTrades: boolean;
+  notifyInApp?: boolean;
+  notifyPush?: boolean;
+  notifyBuyConfirms?: boolean;
+  notifySellConfirms?: boolean;
+  notifyTradeFailed?: boolean;
+  notifyTakeProfit?: boolean;
+  notifyStopLoss?: boolean;
   telegramEnabled: boolean;
   whatsappEnabled: boolean;
   emailEnabled: boolean;
@@ -632,6 +643,9 @@ export type AppSettings = {
   killSwitch: boolean;
   emergencyStop: boolean;
   autoTradingEnabled: boolean;
+  autoTradeMemecoins?: boolean;
+  autoTradeMemecoinAddresses?: string[];
+  autoTradeForex?: boolean;
   walletPublicKey: string | null;
   trackedWallets?: Array<{ address: string; label: string }>;
   maxSlippageBps: number;
@@ -1070,8 +1084,12 @@ export async function openPaperFromSignal(address: string) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ address }),
   });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
+  if (!res.ok) throw new ApiError(await readError(res), res.status);
+  return res.json() as Promise<{
+    position: PaperPosition;
+    signalType: string;
+    disclaimer: string;
+  }>;
 }
 
 export type BetBookmaker = 'bet9ja' | 'sportybet' | 'third';
@@ -1086,6 +1104,7 @@ export type BetFixture = {
   home: { id: string; name: string; popular: boolean };
   away: { id: string; name: string; popular: boolean };
   popularMatch: boolean;
+  topLeague?: boolean;
   live?: boolean;
   score?: { home: number | null; away: number | null };
   minute?: string;
@@ -1197,6 +1216,8 @@ export type BetFixtureAnalysis = {
   multiScore?: BetPackFields['multiScore'];
   markets: BetMarketRow[];
   recommended: BetMarketRow | null;
+  rankedMarkets?: string[];
+  cardLines?: Array<{ family: string; pct: number; detail: string }>;
   avoidReasons: string[];
   disclaimer: string;
   ai?: {
@@ -1210,6 +1231,9 @@ export type BetFixtureAnalysis = {
     why: string[];
     risk: string;
     note: string;
+    statsMarket?: string;
+    chosenFrom?: 'openai' | 'stats' | 'local';
+    webSources?: Array<{ title: string; url: string }>;
   };
 };
 
@@ -1224,12 +1248,18 @@ export type BetSlipSelection = {
   bookmaker: BetBookmaker;
   safetyScore: number;
   riskLevel: string;
+  country?: string;
+  countryFlag?: string;
+  league?: string;
+  leagueHeading?: string;
+  cardLines?: Array<{ family: string; pct: number; detail: string }>;
 };
 
 export async function fetchBetStatus() {
   const res = await apiFetch(`${API_BASE_URL}/bet-bot/status`);
   if (!res.ok) throw new ApiError(await readError(res), res.status);
   return res.json() as Promise<{
+    providers?: { sportmonks: string; apiFootball: string; footballDataOrg: string };
     footballData: string;
     oddsApi: string;
     bookmakers: Array<{ id: string; label: string; oddsFeed: string }>;
@@ -1244,6 +1274,7 @@ export async function fetchBetFixtures(params?: {
   league?: string;
   popular?: boolean;
   date?: string;
+  day?: string;
 }) {
   const sp = new URLSearchParams();
   if (params?.q) sp.set('q', params.q);
@@ -1251,8 +1282,9 @@ export async function fetchBetFixtures(params?: {
   if (params?.popular === true) sp.set('popular', '1');
   else sp.set('popular', 'all');
   if (params?.date) sp.set('date', params.date);
+  if (params?.day) sp.set('day', params.day);
   const qs = sp.toString();
-  const res = await apiFetch(`${API_BASE_URL}/bet-bot/fixtures${qs ? `?${qs}` : ''}`);
+  const res = await apiFetch(`${API_BASE_URL}/bet-bot/fixtures${qs ? `?${qs}` : ''}`, undefined, 90000);
   if (!res.ok) throw new ApiError(await readError(res), res.status);
   return res.json() as Promise<{
     source: string;
@@ -1268,14 +1300,18 @@ export async function fetchBetLiveFixtures(params?: {
   q?: string;
   league?: string;
   popular?: boolean;
+  date?: string;
+  day?: string;
 }) {
   const sp = new URLSearchParams();
   if (params?.q) sp.set('q', params.q);
   if (params?.league) sp.set('league', params.league);
   if (params?.popular === true) sp.set('popular', '1');
   else sp.set('popular', 'all');
+  if (params?.date) sp.set('date', params.date);
+  if (params?.day) sp.set('day', params.day);
   const qs = sp.toString();
-  const res = await apiFetch(`${API_BASE_URL}/bet-bot/fixtures/live${qs ? `?${qs}` : ''}`);
+  const res = await apiFetch(`${API_BASE_URL}/bet-bot/fixtures/live${qs ? `?${qs}` : ''}`, undefined, 90000);
   if (!res.ok) throw new ApiError(await readError(res), res.status);
   return res.json() as Promise<{
     source: string;
@@ -1287,8 +1323,15 @@ export async function fetchBetLiveFixtures(params?: {
   }>;
 }
 
-export async function fetchBetFixture(id: string) {
-  const res = await apiFetch(`${API_BASE_URL}/bet-bot/fixtures/${encodeURIComponent(id)}`);
+export async function fetchBetFixture(id: string, opts?: { llm?: boolean }) {
+  const sp = new URLSearchParams();
+  if (opts?.llm) sp.set('llm', '1');
+  const qs = sp.toString();
+  const res = await apiFetch(
+    `${API_BASE_URL}/bet-bot/fixtures/${encodeURIComponent(id)}${qs ? `?${qs}` : ''}`,
+    undefined,
+    opts?.llm ? 120000 : 60000,
+  );
   if (!res.ok) throw new ApiError(await readError(res), res.status);
   return res.json() as Promise<BetFixtureAnalysis>;
 }
@@ -1302,6 +1345,17 @@ export type BetBookmakerSlip = {
   copyText: string;
   avgSafety: number;
   avgDelivery: number;
+  legs?: Array<{
+    fixtureId: string;
+    match: string;
+    pick: string;
+    safety: number;
+    country?: string;
+    countryFlag?: string;
+    league?: string;
+    leagueHeading?: string;
+    cardLines?: Array<{ family: string; pct: number; detail: string }>;
+  }>;
 };
 
 export type BetPackFields = {
@@ -1323,6 +1377,7 @@ export type BetPackFields = {
     analysedOdds: number | null;
     reason: string;
   };
+  cardLines?: Array<{ family: string; pct: number; detail: string }>;
 };
 
 export type BetBookingLeg = BetMarketRow &
@@ -1353,8 +1408,20 @@ export type BetAccumulator = {
   note: string;
 };
 
-export async function fetchBetPicks() {
-  const res = await apiFetch(`${API_BASE_URL}/bet-bot/picks`);
+export async function fetchBetPicks(params?: {
+  date?: string;
+  day?: string;
+  market?: string;
+  risk?: string;
+  minimumProbability?: number;
+  minimumConfidence?: number;
+}) {
+  const sp = new URLSearchParams();
+  Object.entries(params ?? {}).forEach(([key, value]) => {
+    if (value != null && value !== '') sp.set(key, String(value));
+  });
+  const qs = sp.toString();
+  const res = await apiFetch(`${API_BASE_URL}/bet-bot/picks${qs ? `?${qs}` : ''}`);
   if (!res.ok) throw new ApiError(await readError(res), res.status);
   return res.json() as Promise<{
     safest: BetPickRow[];
@@ -1364,7 +1431,15 @@ export async function fetchBetPicks() {
     highOdds: BetPickRow[];
     multiScore?: BetPickRow[];
     elite?: BetPickRow[];
-    avoid: Array<{ fixtureId: string; match: string; reasons: string[] }>;
+    avoid: Array<{
+      fixtureId: string;
+      match: string;
+      reasons: string[];
+      country?: string;
+      countryFlag?: string;
+      league?: string;
+      leagueHeading?: string;
+    }>;
     booking: { legs: BetBookingLeg[]; note: string; bookSlips: BetBookmakerSlip[]; accumulators?: {
       safe: BetAccumulator;
       balanced: BetAccumulator;
@@ -1390,6 +1465,7 @@ export async function fetchBetPicks() {
     };
     noBet?: boolean;
     note?: string;
+    aiWarming?: boolean;
     disclaimer: string;
   }>;
 }
@@ -1446,6 +1522,92 @@ export async function verifyBetTicket(body: {
     totalOddsTicket: number | null;
     disclaimer: string;
   }>;
+}
+
+export type FootballPrediction = {
+  market: string;
+  selection: string;
+  probability: number;
+  confidence: number;
+  risk: 'low' | 'medium' | 'high';
+  dataQuality: 'high' | 'medium' | 'low';
+  sampleSize: number;
+  modelScore: number;
+  impliedProbability: number | null;
+  valueEdge: number | null;
+  reason: string;
+  providerAgreement: { available: number; total: number; score: number; label: string; discrepancies: string[] };
+};
+
+export async function fetchFootballFixtures(params?: {
+  date?: string;
+  day?: string;
+  league?: string;
+  provider?: string;
+}) {
+  const sp = new URLSearchParams();
+  Object.entries(params ?? {}).forEach(([key, value]) => {
+    if (value) sp.set(key, value);
+  });
+  const qs = sp.toString();
+  const res = await apiFetch(`${API_BASE_URL}/fixtures${qs ? `?${qs}` : ''}`);
+  if (!res.ok) throw new ApiError(await readError(res), res.status);
+  return res.json() as Promise<{
+    timezone: string;
+    source: string[];
+    count: number;
+    items: Array<{ internalId: string; kickoffUtc: string; kickoffLocal: string; homeTeam: { name: string }; awayTeam: { name: string }; providerIds: Record<string, string>; providerAgreement: FootballPrediction['providerAgreement']; discrepancies: string[] }>;
+    providers: Array<{ provider: string; status: string; responseTimeMs: number | null; errors: number; fixturesReceived: number }>;
+    disclaimer: string;
+  }>;
+}
+
+export async function fetchTopFootballPredictions(params?: {
+  date?: string;
+  day?: string;
+  league?: string;
+  provider?: string;
+  market?: string;
+  risk?: string;
+  minimumProbability?: number;
+  minimumConfidence?: number;
+}) {
+  const sp = new URLSearchParams();
+  Object.entries(params ?? {}).forEach(([key, value]) => {
+    if (value != null) sp.set(key, String(value));
+  });
+  const qs = sp.toString();
+  const res = await apiFetch(`${API_BASE_URL}/predictions/top${qs ? `?${qs}` : ''}`);
+  if (!res.ok) throw new ApiError(await readError(res), res.status);
+  return res.json() as Promise<{
+    count: number;
+    analyzedFixtures: number;
+    items: Array<{ fixture: unknown; prediction: FootballPrediction; openAi: unknown }>;
+    note: string;
+    disclaimer: string;
+  }>;
+}
+
+export async function fetchFootballAnalysis(id: string) {
+  const res = await apiFetch(`${API_BASE_URL}/analysis/${encodeURIComponent(id)}`);
+  if (!res.ok) throw new ApiError(await readError(res), res.status);
+  return res.json() as Promise<{ fixture: unknown; modelProbabilities: FootballPrediction[]; providerConsensus: FootballPrediction['providerAgreement']; dataQuality: string; openAi?: unknown }>;
+}
+
+export async function fetchFootballProviderStatus() {
+  const res = await apiFetch(`${API_BASE_URL}/providers/status`);
+  if (!res.ok) throw new ApiError(await readError(res), res.status);
+  return res.json();
+}
+
+export async function fetchFootballBacktesting(params?: { date?: string; day?: string }) {
+  const sp = new URLSearchParams();
+  if (params?.date) sp.set('date', params.date);
+  if (params?.day) sp.set('day', params.day);
+  const qs = sp.toString();
+  const res = await apiFetch(`${API_BASE_URL}/backtesting${qs ? `?${qs}` : ''}`);
+  if (!res.ok) throw new ApiError(await readError(res), res.status);
+  return res.json();
 }
 
 export type FxSide = 'BUY' | 'SELL';
@@ -1576,6 +1738,7 @@ export async function fetchForexStatus() {
     pipeline: string[];
     mode: 'PAPER' | 'LIVE';
     killSwitch: boolean;
+    autoTradeForex?: boolean;
     session: { name: string; forexOpen: boolean; rollover: boolean; note: string };
     scoringNote: string;
     disclaimer: string;
@@ -1605,6 +1768,280 @@ export async function fetchForexSignal(id: string) {
   const res = await apiFetch(`${API_BASE_URL}/forex-bot/signals/${encodeURIComponent(id)}`);
   if (!res.ok) throw new ApiError(await readError(res), res.status);
   return res.json() as Promise<{ signal: FxSignal; disclaimer: string }>;
+}
+
+export type FxChartCandle = {
+  time: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume?: number;
+};
+
+export type FxPairDetail = {
+  symbol: string;
+  interval: string;
+  source: string;
+  quote: FxQuote;
+  analysis: {
+    bias: 'BUY' | 'SELL' | 'WAIT';
+    side: FxSide | null;
+    buyPct: number;
+    sellPct: number;
+    setupQuality: number;
+    rsi: number | null;
+    changePct: number;
+    changePips: number;
+    zone: { low: number; high: number; mid: number; widthPips: number } | null;
+    stopLoss: number | null;
+    takeProfit1: number | null;
+    takeProfit2: number | null;
+    riskReward1: number;
+    tradeable: boolean;
+    reasons: string[];
+    filtersFailed: string[];
+    confidence: FxSignal['confidence'];
+  };
+  candlestick: {
+    pattern: string;
+    consecutiveBullish: number;
+    consecutiveBearish: number;
+    closeLocation: string;
+    bullish: boolean;
+    notes: string[];
+    score: number;
+  };
+  candles: FxChartCandle[];
+  whyNotBuy: {
+    title: string;
+    decision: string;
+    buyScore: number;
+    safetyScore: number;
+    agreeing: number;
+    required: number;
+    available: number;
+    summary: string;
+    testsPassed?: boolean;
+    items: Array<{
+      key: string;
+      label: string;
+      passed: boolean;
+      blocking: boolean;
+      status: 'PASS' | 'FAIL' | 'NEUTRAL';
+      value: string;
+      detail: string;
+      whyItMatters: string;
+    }>;
+  };
+  signal: FxSignal | null;
+  session: { name: string; forexOpen: boolean; note: string };
+  disclaimer: string;
+};
+
+const FX_YAHOO: Record<string, string> = {
+  EURUSD: 'EURUSD=X',
+  GBPUSD: 'GBPUSD=X',
+  USDJPY: 'USDJPY=X',
+  USDCHF: 'USDCHF=X',
+  AUDUSD: 'AUDUSD=X',
+  USDCAD: 'USDCAD=X',
+  NZDUSD: 'NZDUSD=X',
+  EURGBP: 'EURGBP=X',
+  EURJPY: 'EURJPY=X',
+  GBPJPY: 'GBPJPY=X',
+  XAUUSD: 'XAUUSD=X',
+};
+
+const FX_YF_INTERVAL: Record<string, { interval: string; range: string }> = {
+  '5m': { interval: '5m', range: '5d' },
+  '15m': { interval: '15m', range: '5d' },
+  '30m': { interval: '30m', range: '1mo' },
+  '1h': { interval: '60m', range: '1mo' },
+  '1d': { interval: '1d', range: '6mo' },
+};
+
+function isFxPairDetail(json: unknown): json is FxPairDetail {
+  if (!json || typeof json !== 'object') return false;
+  const row = json as Partial<FxPairDetail>;
+  return Array.isArray(row.candles) && !!row.whyNotBuy && !!row.analysis && typeof row.symbol === 'string';
+}
+
+function isFxScan(json: unknown): json is { board: FxBoardRow[]; session?: FxPairDetail['session']; source?: string; disclaimer?: string; signals?: FxSignal[] } {
+  if (!json || typeof json !== 'object') return false;
+  return Array.isArray((json as { board?: unknown }).board);
+}
+
+async function fetchYahooFxCandles(symbol: string, timeframe: string): Promise<FxChartCandle[]> {
+  const ticker = FX_YAHOO[symbol];
+  if (!ticker) return [];
+  const spec = FX_YF_INTERVAL[timeframe] ?? FX_YF_INTERVAL['15m']!;
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?interval=${spec.interval}&range=${spec.range}`;
+  const res = await fetch(url, {
+    headers: {
+      Accept: 'application/json',
+      'User-Agent': 'Mozilla/5.0 (compatible; Memecoinbot-Forex/1.0)',
+    },
+  });
+  if (!res.ok) return [];
+  const json = (await res.json()) as {
+    chart?: {
+      result?: Array<{
+        timestamp?: number[];
+        indicators?: { quote?: Array<{ open?: number[]; high?: number[]; low?: number[]; close?: number[]; volume?: number[] }> };
+      }>;
+    };
+  };
+  const result = json.chart?.result?.[0];
+  const ts = result?.timestamp ?? [];
+  const q = result?.indicators?.quote?.[0];
+  const out: FxChartCandle[] = [];
+  for (let i = 0; i < ts.length; i++) {
+    const open = q?.open?.[i];
+    const high = q?.high?.[i];
+    const low = q?.low?.[i];
+    const close = q?.close?.[i];
+    if (![open, high, low, close].every((n) => typeof n === 'number' && Number.isFinite(n))) continue;
+    out.push({ time: ts[i]!, open: open!, high: high!, low: low!, close: close!, volume: q?.volume?.[i] ?? 0 });
+  }
+  return out.slice(-120);
+}
+
+function whyNotBuyFromBoard(row: FxBoardRow): FxPairDetail['whyNotBuy'] {
+  const items = [
+    ...row.blockers.map((b, i) => ({
+      key: `gate_${i}`,
+      label: b,
+      passed: false,
+      blocking: true,
+      status: 'FAIL' as const,
+      value: 'FAIL',
+      detail: b,
+      whyItMatters: 'This gate is why the pair is not a buy yet.',
+    })),
+    ...row.reasons.slice(0, 6).map((r, i) => ({
+      key: `sig_${i}`,
+      label: r,
+      passed: true,
+      blocking: false,
+      status: 'PASS' as const,
+      value: 'PASS',
+      detail: r,
+      whyItMatters: 'Supporting read from the live scan — not enough on its own.',
+    })),
+  ];
+  const can = row.tradeable && row.bias !== 'WAIT';
+  return {
+    title: can ? 'Why This Passed' : 'Why Not Buy',
+    decision: can ? row.bias : row.bias === 'WAIT' ? 'WAIT' : 'NO_TRADE',
+    buyScore: row.buyPct,
+    safetyScore: row.setupQuality,
+    agreeing: row.reasons.length ? Math.min(row.reasons.length, 3) : 0,
+    required: 3,
+    available: row.reasons.length,
+    summary: can
+      ? `SAFE ${row.bias} ${row.bias === 'BUY' ? row.buyPct : row.sellPct}%. Still a potential setup only — paper first.`
+      : `Do not buy: ${row.blockers[0] || 'WAIT — no BUY/SELL lean.'}`,
+    items,
+    testsPassed: can,
+  };
+}
+
+async function pairDetailFromScan(
+  symbol: string,
+  interval: string,
+  scan: { board: FxBoardRow[]; session?: FxPairDetail['session']; source?: string; disclaimer?: string; signals?: FxSignal[] },
+): Promise<FxPairDetail | null> {
+  const row = scan.board.find((b) => b.symbol === symbol);
+  if (!row) return null;
+  const candles = await fetchYahooFxCandles(symbol, interval).catch(() => [] as FxChartCandle[]);
+  const last = candles[candles.length - 1];
+  const bullish = last ? last.close >= last.open : false;
+  const signal = scan.signals?.find((s) => s.symbol === symbol || s.id === row.signalId) ?? null;
+  return {
+    symbol: row.symbol,
+    interval,
+    source: scan.source || 'scan',
+    quote: {
+      symbol: row.symbol,
+      bid: row.bid,
+      ask: row.ask,
+      mid: row.mid,
+      spreadPips: row.spreadPips,
+      timestamp: new Date().toISOString(),
+      ageMs: 0,
+      stale: row.stale,
+      source: 'scan',
+      dataQuality: row.dataQuality,
+    },
+    analysis: {
+      bias: row.bias,
+      side: row.bias === 'WAIT' ? null : row.bias,
+      buyPct: row.buyPct,
+      sellPct: row.sellPct,
+      setupQuality: row.setupQuality,
+      rsi: row.rsi,
+      changePct: row.changePct,
+      changePips: row.changePips,
+      zone: row.zone,
+      stopLoss: row.stopLoss,
+      takeProfit1: row.takeProfit1,
+      takeProfit2: row.takeProfit2,
+      riskReward1: 0,
+      tradeable: row.tradeable,
+      reasons: row.reasons,
+      filtersFailed: row.blockers,
+      confidence: {
+        setupQuality: row.setupQuality,
+        estimatedHitRateLowPct: null,
+        estimatedHitRateHighPct: null,
+        sampleNote: 'Setup quality is not a win probability.',
+        warning: 'A 90/100 score does not mean a 90% chance of profit.',
+      },
+    },
+    candlestick: {
+      pattern: last ? (bullish ? 'BULLISH' : 'BEARISH') : 'NONE',
+      consecutiveBullish: 0,
+      consecutiveBearish: 0,
+      closeLocation: 'MID',
+      bullish,
+      notes: last ? [`Last candle ${bullish ? 'green' : 'red'}`] : ['No candles yet'],
+      score: last ? (bullish ? 62 : 38) : 0,
+    },
+    candles,
+    whyNotBuy: whyNotBuyFromBoard(row),
+    signal,
+    session: scan.session ?? { name: '—', forexOpen: true, note: '' },
+    disclaimer: scan.disclaimer || '',
+  };
+}
+
+export async function fetchForexPair(symbol: string, interval = '15m') {
+  const sym = symbol.trim().toUpperCase();
+  const qs = `symbol=${encodeURIComponent(sym)}&interval=${encodeURIComponent(interval)}`;
+  const paths = [
+    `${API_BASE_URL}/forex-bot/scan?${qs}`,
+    `${API_BASE_URL}/forex-bot/pairs/${encodeURIComponent(sym)}?interval=${encodeURIComponent(interval)}`,
+    `${API_BASE_URL}/forex-bot/pair/${encodeURIComponent(sym)}?interval=${encodeURIComponent(interval)}`,
+  ];
+  for (const url of paths) {
+    try {
+      const res = await apiFetch(url, undefined, 45000);
+      if (!res.ok) continue;
+      const json: unknown = await res.json();
+      if (isFxPairDetail(json)) return json;
+      if (isFxScan(json)) {
+        const built = await pairDetailFromScan(sym, interval, json);
+        if (built) return built;
+      }
+    } catch {
+      /* try next path */
+    }
+  }
+  const scan = await fetchForexScan();
+  const built = await pairDetailFromScan(sym, interval, scan);
+  if (built) return built;
+  throw new ApiError(`No FX data for ${sym}`, 404);
 }
 
 export async function recheckForexSignal(id: string, side: FxSide) {
@@ -1708,6 +2145,318 @@ export async function setForexKillSwitch(on: boolean) {
 
 export async function emergencyForexStop() {
   const res = await apiFetch(`${API_BASE_URL}/forex-bot/emergency-stop`, { method: 'POST' });
+  if (!res.ok) throw new ApiError(await readError(res), res.status);
+  return res.json();
+}
+
+export type SwapQuote = {
+  side: 'BUY' | 'SELL';
+  tokenAddress: string;
+  symbol: string;
+  name: string;
+  logo?: string | null;
+  currentPrice: number | null;
+  marketCap?: number | null;
+  liquidityUsd?: number | null;
+  volume24h?: number | null;
+  priceChange24h?: number | null;
+  dexId?: string | null;
+  pairAddress?: string | null;
+  network: string;
+  router: string;
+  tradingPair?: string;
+  wallet: string | null;
+  walletBalanceSol: number;
+  walletBalanceSolUsd: number;
+  walletBalanceToken: number;
+  amountUsd: number;
+  amountToken: number;
+  slippageBps: number;
+  platformFeeUsd: number;
+  platformFeeBps: number;
+  networkFeeUsd: number;
+  totalUsd: number;
+  estimatedReceived: number;
+  minimumReceived: number;
+  priceImpactPct: number | null;
+  estimatedTokensReceived?: number;
+  estimatedProceedsUsd?: number;
+  estimatedProceedsSol?: number;
+  platformFeeNote?: string;
+};
+
+export type SwapTrade = {
+  id: string;
+  status: string;
+  side: 'BUY' | 'SELL';
+  tokenAddress: string;
+  symbol: string;
+  name: string;
+  wallet: string;
+  amountUsd: number;
+  tokenQuantity: number;
+  entryPrice: number | null;
+  exitPrice: number | null;
+  platformFeeUsd: number;
+  networkFeeUsd: number;
+  slippageBps: number;
+  priceImpactPct: number | null;
+  txSignature: string | null;
+  errorMessage: string | null;
+  takeProfitPct: number | null;
+  stopLossPct: number | null;
+  confirmed: boolean;
+  createdAt?: string;
+};
+
+export type SwapPosition = {
+  id: string;
+  tokenAddress: string;
+  symbol: string;
+  name: string;
+  qty: number;
+  avgEntry: number;
+  sizeUsd: number;
+  currentPrice: number | null;
+  currentValue: number;
+  unrealizedPnlUsd: number;
+  roiPct: number;
+  takeProfitPct: number | null;
+  stopLossPct: number | null;
+  takeProfitPrice: number | null;
+  stopLossPrice: number | null;
+  status: string;
+  openedAt: string;
+};
+
+export type InboxItem = {
+  id: string;
+  eventId: string;
+  type: string;
+  title: string;
+  body: string;
+  tokenAddress: string | null;
+  symbol: string | null;
+  tradeId: string | null;
+  action: { label: string; screen: string; params?: Record<string, string> } | null;
+  read: boolean;
+  createdAt: string;
+};
+
+export async function fetchSwapConfig() {
+  const res = await apiFetch(`${API_BASE_URL}/swap/config`);
+  if (!res.ok) throw new ApiError(await readError(res), res.status);
+  return res.json() as Promise<{
+    network: string;
+    router: string;
+    platformFeeBps: number;
+    platformFeePct: number;
+    supportedWallets: string[];
+    percentPresets: number[];
+    tpslMode: string;
+    tpslNote: string;
+  }>;
+}
+
+export async function fetchSwapWallet() {
+  const res = await apiFetch(`${API_BASE_URL}/swap/wallet`);
+  if (!res.ok) throw new ApiError(await readError(res), res.status);
+  return res.json() as Promise<{
+    connected: boolean;
+    address: string | null;
+    provider: string | null;
+    solBalance: number;
+    solBalanceUsd: number;
+    network: string;
+  }>;
+}
+
+export async function connectSwapWallet(
+  address: string,
+  provider: 'phantom' | 'solflare' | 'manual' = 'manual',
+) {
+  const res = await apiFetch(`${API_BASE_URL}/swap/wallet`, {
+    method: 'POST',
+    body: JSON.stringify({ address, provider }),
+  });
+  if (!res.ok) throw new ApiError(await readError(res), res.status);
+  return res.json();
+}
+
+export async function disconnectSwapWallet() {
+  const res = await apiFetch(`${API_BASE_URL}/swap/wallet`, { method: 'DELETE' });
+  if (!res.ok) throw new ApiError(await readError(res), res.status);
+  return res.json();
+}
+
+export async function fetchSwapQuote(body: {
+  side: 'BUY' | 'SELL';
+  tokenAddress: string;
+  amountUsd?: number;
+  amountToken?: number;
+  percent?: number;
+  slippageBps?: number;
+  wallet?: string;
+}): Promise<SwapQuote> {
+  const res = await apiFetch(`${API_BASE_URL}/swap/quote`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new ApiError(await readError(res), res.status);
+  return res.json() as Promise<SwapQuote>;
+}
+
+export async function prepareSwap(body: {
+  side: 'BUY' | 'SELL';
+  tokenAddress: string;
+  amountUsd?: number;
+  amountToken?: number;
+  percent?: number;
+  slippageBps?: number;
+  wallet?: string;
+  takeProfitPct?: number | null;
+  stopLossPct?: number | null;
+  idempotencyKey?: string;
+  confirmRealMoney: boolean;
+}) {
+  const res = await apiFetch(`${API_BASE_URL}/swap/prepare`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Idempotency-Key': body.idempotencyKey ?? '',
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new ApiError(await readError(res), res.status);
+  return res.json() as Promise<{
+    id: string;
+    status: string;
+    unsignedSwapTx: string;
+    quote: SwapQuote;
+    takeProfitPct: number | null;
+    stopLossPct: number | null;
+    note: string;
+  }>;
+}
+
+export async function submitSwap(id: string, signature: string) {
+  const res = await apiFetch(`${API_BASE_URL}/swap/trades/${id}/submit`, {
+    method: 'POST',
+    body: JSON.stringify({ signature }),
+  });
+  if (!res.ok) throw new ApiError(await readError(res), res.status);
+  return res.json() as Promise<SwapTrade>;
+}
+
+export async function rejectSwap(id: string, reason?: string) {
+  const res = await apiFetch(`${API_BASE_URL}/swap/trades/${id}/reject`, {
+    method: 'POST',
+    body: JSON.stringify({ reason }),
+  });
+  if (!res.ok) throw new ApiError(await readError(res), res.status);
+  return res.json() as Promise<SwapTrade>;
+}
+
+export async function fetchSwapTrade(id: string) {
+  const res = await apiFetch(`${API_BASE_URL}/swap/trades/${id}`);
+  if (!res.ok) throw new ApiError(await readError(res), res.status);
+  return res.json() as Promise<SwapTrade>;
+}
+
+export async function fetchSwapTrades(limit = 50) {
+  const res = await apiFetch(`${API_BASE_URL}/swap/trades?limit=${limit}`);
+  if (!res.ok) throw new ApiError(await readError(res), res.status);
+  return res.json() as Promise<{ items: SwapTrade[]; count: number }>;
+}
+
+export async function fetchSwapPortfolio() {
+  const res = await apiFetch(`${API_BASE_URL}/swap/portfolio`);
+  if (!res.ok) throw new ApiError(await readError(res), res.status);
+  return res.json() as Promise<{
+    wallet: Awaited<ReturnType<typeof fetchSwapWallet>>;
+    positions: SwapPosition[];
+    recentTrades: SwapTrade[];
+    totalValueUsd: number;
+    unrealizedPnlUsd: number;
+  }>;
+}
+
+export async function setPositionTpsl(
+  id: string,
+  body: { takeProfitPct?: number | null; stopLossPct?: number | null },
+) {
+  const res = await apiFetch(`${API_BASE_URL}/swap/positions/${id}/tpsl`, {
+    method: 'PUT',
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new ApiError(await readError(res), res.status);
+  return res.json();
+}
+
+export async function fetchNotificationInbox(limit = 50) {
+  const res = await apiFetch(`${API_BASE_URL}/notifications/inbox?limit=${limit}`);
+  if (!res.ok) throw new ApiError(await readError(res), res.status);
+  return res.json() as Promise<{ items: InboxItem[]; count: number; unread: number }>;
+}
+
+export async function markNotificationRead(id: string) {
+  const res = await apiFetch(`${API_BASE_URL}/notifications/inbox/${id}/read`, {
+    method: 'POST',
+  });
+  if (!res.ok) throw new ApiError(await readError(res), res.status);
+  return res.json();
+}
+
+export async function markAllNotificationsRead() {
+  const res = await apiFetch(`${API_BASE_URL}/notifications/inbox/read-all`, {
+    method: 'POST',
+  });
+  if (!res.ok) throw new ApiError(await readError(res), res.status);
+  return res.json();
+}
+
+export async function fetchNotificationPreferences() {
+  const res = await apiFetch(`${API_BASE_URL}/notifications/preferences`);
+  if (!res.ok) throw new ApiError(await readError(res), res.status);
+  return res.json() as Promise<{
+    inApp: boolean;
+    push: boolean;
+    telegram: boolean;
+    buy: boolean;
+    sell: boolean;
+    confirmation: boolean;
+    failure: boolean;
+    takeProfit: boolean;
+    stopLoss: boolean;
+  }>;
+}
+
+export async function updateNotificationPreferences(
+  patch: Partial<{
+    inApp: boolean;
+    push: boolean;
+    telegram: boolean;
+    buy: boolean;
+    sell: boolean;
+    confirmation: boolean;
+    failure: boolean;
+    takeProfit: boolean;
+    stopLoss: boolean;
+  }>,
+) {
+  const res = await apiFetch(`${API_BASE_URL}/notifications/preferences`, {
+    method: 'PUT',
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) throw new ApiError(await readError(res), res.status);
+  return res.json();
+}
+
+export async function registerPushToken(token: string) {
+  const res = await apiFetch(`${API_BASE_URL}/notifications/push-token`, {
+    method: 'POST',
+    body: JSON.stringify({ token }),
+  });
   if (!res.ok) throw new ApiError(await readError(res), res.status);
   return res.json();
 }

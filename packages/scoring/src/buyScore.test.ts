@@ -197,6 +197,7 @@ describe('evaluateMasterStrategy', () => {
     });
     expect(result.canBuy).toBe(false);
     expect(result.whyNotBuy.title).toBe('Why Not Buy');
+    expect(result.whyNotBuy.testsPassed).toBe(false);
     expect(result.whyNotBuy.items.some((i) => i.key === 'fomo' && !i.passed)).toBe(
       true,
     );
@@ -232,6 +233,39 @@ describe('evaluateMasterStrategy', () => {
     expect(result.agreeing).toBeGreaterThanOrEqual(3);
     expect(result.canBuy).toBe(true);
     expect(result.whyNotBuy.title).toBe('Why This Passed');
+    expect(result.whyNotBuy.testsPassed).toBe(true);
     expect(result.signalType).toBe(SignalType.BUY);
+  });
+
+  it('does not emit BUY when an extra fail-safe fires, even if other gates look green', () => {
+    const levels = calculateTradeLevels({
+      currentPrice: 1,
+      atr: 0.02,
+      support: 0.93,
+      tp1Pct: 30,
+      tp2Pct: 60,
+    });
+    const result = evaluateMasterStrategy({
+      safetyScore: 88,
+      technicalScore: 82,
+      momentumScore: 80,
+      candlestick: { ...analyzeCandlestickStructure([]), score: 75, bullish: true },
+      smartMoney: scoreSmartMoneyFromHoldings({ walletsChecked: 3, holders: 2 }),
+      social: { score: 70, available: true, notes: ['Buy pressure'] },
+      fomo: {
+        fomoScore: 10,
+        pumpScore: 8,
+        extremeFomo: false,
+        highRiskPump: false,
+        notes: ['No extreme FOMO / pump flags'],
+      },
+      levels: { ...levels, entryValid: true, riskReward: Math.max(levels.riskReward, 2.1) },
+      liquidityUsd: 120_000,
+      criticalWarning: false,
+      extraFailed: ['Meme-coin score below 60 — AVOID (not a BUY)'],
+    });
+    expect(result.canBuy).toBe(false);
+    expect(result.whyNotBuy.testsPassed).toBe(false);
+    expect(result.signalType).not.toBe(SignalType.BUY);
   });
 });

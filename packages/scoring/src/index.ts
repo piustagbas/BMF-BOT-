@@ -34,6 +34,7 @@ export {
   scoreSmartMoneyFromConsensus,
   collectIndependentSignals,
   buildWhyNotBuyPanel,
+  testsPassedFromItems,
   type BuyScoreWeights,
   type BuyScoreComponents,
   type FomoPumpResult,

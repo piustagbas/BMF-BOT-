@@ -68,7 +68,7 @@ export function PaperScreen() {
 
   return (
     <View style={common.screen}>
-      <Text style={common.title}>Paper Trading</Text>
+      <Text style={common.title}>Demo Trading</Text>
       <Text style={common.subtitle}>
         Simulated fills only — no chain transactions. Default balance $1,000. Not financial advice.
       </Text>
@@ -92,7 +92,7 @@ export function PaperScreen() {
           ListHeaderComponent={
             <View>
               <View style={common.card}>
-                <StatusBadge label="PAPER MODE" tone="ok" />
+                <StatusBadge label="DEMO MODE" tone="ok" />
                 <Text style={common.cardTitle}>Account</Text>
                 <Text style={common.cardBody}>
                   Balance ${fmt(perf?.currentBalance ?? data?.account.balance ?? 0)} · Equity $
@@ -172,7 +172,7 @@ export function PaperScreen() {
             </View>
           }
           ListEmptyComponent={
-            <Text style={common.cardBody}>No open paper positions. Open a test trade to try TP/SL.</Text>
+            <Text style={common.cardBody}>No open demo positions. Open a test trade to try TP/SL.</Text>
           }
           renderItem={({ item }) => (
             <View style={common.card}>

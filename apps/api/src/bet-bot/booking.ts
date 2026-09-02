@@ -23,10 +23,13 @@ export type BookingCandidate = {
   odds: { bestOdds: number | null };
   analysedOdds?: number | null;
   country?: string;
+  countryFlag?: string;
+  leagueHeading?: string;
   last5Home?: string;
   last5Away?: string;
   scoresHome?: string;
   scoresAway?: string;
+  cardLines?: Array<{ family: string; pct: number; detail: string }>;
 };
 
 export type BookmakerSlip = {
@@ -38,6 +41,17 @@ export type BookmakerSlip = {
   copyText: string;
   avgSafety: number;
   avgDelivery: number;
+  legs: Array<{
+    fixtureId: string;
+    match: string;
+    pick: string;
+    safety: number;
+    country?: string;
+    countryFlag?: string;
+    league?: string;
+    leagueHeading?: string;
+    cardLines?: Array<{ family: string; pct: number; detail: string }>;
+  }>;
 };
 
 const BOOKS: Array<{ id: BookmakerId; label: string; site: string | null; how: string }> = [
@@ -332,7 +346,18 @@ export function formatBookmakerSlips(legs: BookingCandidate[]): BookmakerSlip[] 
     bookingCode: null,
     avgSafety,
     avgDelivery,
-    copyText: buildCopyText(book, legs, avgSafety, avgDelivery),
+    legs: legs.map((leg) => ({
+      fixtureId: leg.fixtureId,
+      match: `${leg.home} vs ${leg.away}`,
+      pick: leg.label,
+      safety: Math.round(scoreOf(leg)),
+      country: leg.country,
+      countryFlag: leg.countryFlag,
+      league: leg.league,
+      leagueHeading: leg.leagueHeading,
+      cardLines: leg.cardLines,
+    })),
+    copyText: buildCopyText(book, legs, avgSafety),
   }));
 }
 
@@ -340,50 +365,23 @@ function buildCopyText(
   book: (typeof BOOKS)[number],
   legs: BookingCandidate[],
   avgSafety: number,
-  avgDelivery: number,
 ): string {
   const header = [
-    `${book.label.toUpperCase()} — TYPE THESE ON THE SITE`,
-    book.site ? `Open: ${book.site}` : 'Enter on your bookmaker site',
-    `Legs: ${legs.length} · avg safety ${avgSafety} · avg delivery ${avgDelivery}%` +
-      (combinedPrice(legs) != null ? ` · combined analysed ${combinedPrice(legs)}` : ''),
-    'Search each match, then select the market. No booking code is issued.',
-    'Not a guarantee. Check live odds on the site before you stake.',
+    `${book.label.toUpperCase()} SLIP`,
     '',
-    'QUICK LIST',
+    `Avg safe ${avgSafety}%`,
+    'Confirm the pick on the site before you stake.',
+    '',
   ];
   if (!legs.length) {
     return [...header, 'Waiting on markets — refresh Bet Bot after fixtures load.'].join('\n');
   }
-  const quick = legs.map((leg) => {
-    const where = leg.country ? `${leg.country} · ${leg.league}` : leg.league;
-    return `${leg.home} vs ${leg.away} — ${leg.label} (${where})`;
-  });
-  const lines = legs.map((leg, i) => {
-    const when = formatKickoff(leg.kickoffUtc);
-    const guide =
-      leg.odds.bestOdds != null
-        ? `   Guide ${leg.odds.bestOdds} (not ${book.label} price — confirm on site)`
-        : `   Analysed ${analysedPrice(leg) ?? 'n/a'} (confirm on ${book.label} — not a book price)`;
-    return [
-      `${i + 1}) Search: ${leg.home} vs ${leg.away}`,
-      `   Select: ${leg.label}`,
-      `   ${leg.country ? `${leg.country} · ` : ''}${leg.league} · ${when}`,
-      `   Delivery ${leg.deliveryRate}% · safety ${leg.safetyScore}`,
-      ...(leg.last5Home || leg.scoresHome
-        ? [`   ${leg.home} last 5 ${leg.last5Home || '—'} · ${leg.scoresHome || 'no scores in feed'}`]
-        : []),
-      ...(leg.last5Away || leg.scoresAway
-        ? [`   ${leg.away} last 5 ${leg.last5Away || '—'} · ${leg.scoresAway || 'no scores in feed'}`]
-        : []),
-      guide,
-    ].join('\n');
-  });
-  return [...header, ...quick, '', ...lines, '', book.how].join('\n');
-}
-
-function formatKickoff(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toISOString().replace('T', ' ').replace('.000Z', ' UTC');
+  const body = legs.flatMap((leg, i) => [
+    `${i + 1}.`,
+    `${leg.home} vs ${leg.away}`,
+    `Safe ${Math.round(scoreOf(leg))}%`,
+    `Stake: ${leg.label}`,
+    '',
+  ]);
+  return [...header, ...body].join('\n').trimEnd();
 }

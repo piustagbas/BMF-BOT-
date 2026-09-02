@@ -9,6 +9,7 @@ import {
   View,
 } from 'react-native';
 import { colors, common, spacing } from '../theme';
+import { detectSwingStructure, type SwingKind } from './swingStructure';
 
 export type ChartCandle = {
   time: number;
@@ -93,6 +94,10 @@ export function CandlestickChart({
   zoomRef.current = zoom;
 
   const visible = candles;
+  const swing = useMemo(
+    () => detectSwingStructure(visible, visible.length > 60 ? 3 : 2),
+    [visible],
+  );
 
   const { min, max, last, changePct } = useMemo(() => {
     if (!visible.length) {
@@ -104,6 +109,14 @@ export function CandlestickChart({
       if (c.low < lo) lo = c.low;
       if (c.high > hi) hi = c.high;
     }
+    for (const p of swing.points) {
+      lo = Math.min(lo, p.price);
+      hi = Math.max(hi, p.price);
+    }
+    if (swing.nextPrice != null) {
+      lo = Math.min(lo, swing.nextPrice);
+      hi = Math.max(hi, swing.nextPrice);
+    }
     if (levels?.entryMin != null) lo = Math.min(lo, levels.entryMin);
     if (levels?.entryMax != null) hi = Math.max(hi, levels.entryMax);
     if (levels?.stopLoss != null) lo = Math.min(lo, levels.stopLoss);
@@ -111,12 +124,12 @@ export function CandlestickChart({
       lo = visible[0]!.low;
       hi = visible[0]!.high || lo + 1;
     }
-    const pad = (hi - lo) * 0.06 || hi * 0.01 || 1e-12;
+    const pad = (hi - lo) * 0.12 || hi * 0.01 || 1e-12;
     const first = visible[0]!;
     const end = visible[visible.length - 1]!;
     const pct = first.open > 0 ? ((end.close - first.open) / first.open) * 100 : 0;
     return { min: lo - pad, max: hi + pad, last: end, changePct: pct };
-  }, [visible, levels]);
+  }, [visible, levels, swing]);
 
   const onLayout = (e: LayoutChangeEvent) => {
     setWidth(e.nativeEvent.layout.width);
@@ -128,7 +141,7 @@ export function CandlestickChart({
   const barW = MIN_BAR_WIDTH * zoom;
   const contentWidth = Math.max(
     width,
-    visible.length * barW + barGap * Math.max(0, visible.length - 1),
+    visible.length * barW + barGap * Math.max(0, visible.length - 1) + (swing.nextKind ? 36 : 0),
   );
 
   const applyZoom = (next: number) => {
@@ -350,6 +363,74 @@ export function CandlestickChart({
                   </View>
                 );
               })}
+              {swing.points.map((p) => {
+                const size = 18;
+                const left = p.index * (barW + barGap) + barW / 2 - size / 2;
+                const top = y(p.price) - size / 2;
+                const color = swingColor(p.kind);
+                const labelAbove = p.type === 'high';
+                return (
+                  <View
+                    key={`${p.kind}-${p.index}`}
+                    pointerEvents="none"
+                    style={{
+                      position: 'absolute',
+                      left,
+                      top,
+                      width: size,
+                      height: size,
+                      borderRadius: size / 2,
+                      borderWidth: 2,
+                      borderColor: color,
+                      backgroundColor: 'transparent',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                    }}
+                  >
+                    <Text
+                      style={{
+                        position: 'absolute',
+                        top: labelAbove ? -13 : size + 1,
+                        color,
+                        fontSize: 9,
+                        fontWeight: '800',
+                      }}
+                    >
+                      {p.kind}
+                    </Text>
+                  </View>
+                );
+              })}
+              {swing.nextKind && swing.nextPrice != null ? (
+                <View
+                  pointerEvents="none"
+                  style={{
+                    position: 'absolute',
+                    left: contentWidth - barW - 6,
+                    top: y(swing.nextPrice) - 11,
+                    width: 22,
+                    height: 22,
+                    borderRadius: 11,
+                    borderWidth: 2,
+                    borderStyle: 'dashed',
+                    borderColor: colors.info,
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                >
+                  <Text
+                    style={{
+                      position: 'absolute',
+                      top: -13,
+                      color: colors.info,
+                      fontSize: 8,
+                      fontWeight: '800',
+                    }}
+                  >
+                    NEXT {swing.nextKind}
+                  </Text>
+                </View>
+              ) : null}
               {levelLines.map((line) => {
                 const top = y(line.price);
                 if (top < 0 || top > height) return null;
@@ -408,12 +489,98 @@ export function CandlestickChart({
       {error && visible.length ? (
         <Text style={[common.cardBody, { marginTop: 6, color: colors.warn }]}>{error}</Text>
       ) : null}
+
+      {swing.points.length ? (
+        <View style={{ marginTop: 10 }}>
+          <View style={[common.row, { flexWrap: 'wrap', gap: 6 }]}>
+            <Text style={[common.cardBody, { color: colors.text, fontWeight: '700' }]}>
+              Structure {swing.trend}
+            </Text>
+            <View
+              style={{
+                paddingHorizontal: 8,
+                paddingVertical: 3,
+                borderRadius: 8,
+                backgroundColor:
+                  swing.confirm === 'BUY'
+                    ? colors.positive + '22'
+                    : swing.confirm === 'SELL'
+                      ? colors.negative + '22'
+                      : colors.warn + '22',
+              }}
+            >
+              <Text
+                style={{
+                  color:
+                    swing.confirm === 'BUY'
+                      ? colors.positive
+                      : swing.confirm === 'SELL'
+                        ? colors.negative
+                        : colors.warn,
+                  fontSize: 11,
+                  fontWeight: '800',
+                }}
+              >
+                {swing.confirm === 'WAIT' ? 'WAIT TO CONFIRM' : `CONFIRM ${swing.confirm}`}
+              </Text>
+            </View>
+          </View>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 6 }}>
+            {(['HH', 'HL', 'LH', 'LL'] as SwingKind[]).map((k) => (
+              <View key={k} style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                <View
+                  style={{
+                    width: 10,
+                    height: 10,
+                    borderRadius: 5,
+                    borderWidth: 2,
+                    borderColor: swingColor(k),
+                  }}
+                />
+                <Text style={[common.cardBody, { fontSize: 11 }]}>{swingLabel(k)}</Text>
+              </View>
+            ))}
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+              <View
+                style={{
+                  width: 10,
+                  height: 10,
+                  borderRadius: 5,
+                  borderWidth: 2,
+                  borderStyle: 'dashed',
+                  borderColor: colors.info,
+                }}
+              />
+              <Text style={[common.cardBody, { fontSize: 11 }]}>
+                Next {swing.nextKind ?? '—'}
+              </Text>
+            </View>
+          </View>
+          <Text style={[common.cardBody, { marginTop: 6, color: colors.text }]}>
+            {swing.confirmNote}
+          </Text>
+        </View>
+      ) : null}
+
       <Text style={[common.cardBody, { marginTop: 6 }]}>
-        Pinch the chart or tap + / − to zoom. Swipe to move. Green = close above
-        open.
+        Circles mark swing highs/lows. Dashed circle is the next formation to expect
+        before a buy or sell confirm. Pinch or tap + / − to zoom.
       </Text>
     </View>
   );
+}
+
+function swingColor(kind: SwingKind): string {
+  if (kind === 'HH' || kind === 'HL' || kind === 'H') return colors.positive;
+  return colors.negative;
+}
+
+function swingLabel(kind: SwingKind): string {
+  if (kind === 'HH') return 'Higher high';
+  if (kind === 'HL') return 'Higher low';
+  if (kind === 'LH') return 'Lower high';
+  if (kind === 'LL') return 'Lower low';
+  return kind;
 }
 
 function ZoomButton({

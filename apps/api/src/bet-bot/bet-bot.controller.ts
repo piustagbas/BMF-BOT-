@@ -21,15 +21,30 @@ export class BetBotController {
     @Query('league') league?: string,
     @Query('popular') popular?: string,
     @Query('date') date?: string,
+    @Query('day') day?: string,
     @Query('kickoffFrom') kickoffFrom?: string,
     @Query('kickoffTo') kickoffTo?: string,
   ) {
-    return this.betBot.fixtures({ q, league, popular, date, kickoffFrom, kickoffTo });
+    return this.betBot.fixtures({ q, league, popular, date, day, kickoffFrom, kickoffTo });
   }
 
   @Get('picks')
-  picks() {
-    return this.betBot.picks();
+  picks(
+    @Query('date') date?: string,
+    @Query('day') day?: string,
+    @Query('market') market?: string,
+    @Query('risk') risk?: string,
+    @Query('minimumProbability') minimumProbability?: string,
+    @Query('minimumConfidence') minimumConfidence?: string,
+  ) {
+    return this.betBot.picks({
+      date,
+      day,
+      market,
+      risk,
+      minimumProbability: this.numberOrUndefined(minimumProbability),
+      minimumConfidence: this.numberOrUndefined(minimumConfidence),
+    });
   }
 
   @Get('picks/booking')
@@ -42,13 +57,15 @@ export class BetBotController {
     @Query('q') q?: string,
     @Query('league') league?: string,
     @Query('popular') popular?: string,
+    @Query('date') date?: string,
+    @Query('day') day?: string,
   ) {
-    return this.betBot.liveBoard({ q, league, popular });
+    return this.betBot.liveBoard({ q, league, popular, date, day });
   }
 
   @Get('fixtures/:id')
-  analyze(@Param('id') id: string) {
-    return this.betBot.analyze(id);
+  analyze(@Param('id') id: string, @Query('llm') llm?: string) {
+    return this.betBot.analyze(id, { llm: llm === '1' || llm === 'true' });
   }
 
   @Get('slip')
@@ -75,5 +92,10 @@ export class BetBotController {
     },
   ) {
     return this.betBot.verifyTicket(body);
+  }
+
+  private numberOrUndefined(value: string | undefined): number | undefined {
+    if (!value || !Number.isFinite(Number(value))) return undefined;
+    return Number(value);
   }
 }

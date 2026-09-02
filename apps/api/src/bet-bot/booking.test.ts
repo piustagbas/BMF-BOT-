@@ -107,10 +107,11 @@ describe('booking selection', () => {
     expect(legs.legs.map((l) => l.fixtureId).sort()).toEqual(['es', 'pl']);
     expect(legs.bookSlips).toHaveLength(3);
     expect(legs.bookSlips[0]?.label).toBe('Bet9ja');
-    expect(legs.bookSlips[0]?.copyText).toContain('BET9JA — TYPE THESE ON THE SITE');
-    expect(legs.bookSlips[0]?.copyText).toContain('Search:');
+    expect(legs.bookSlips[0]?.copyText).toContain('BET9JA SLIP');
+    expect(legs.bookSlips[0]?.copyText).toContain('Stake:');
+    expect(legs.bookSlips[0]?.copyText).toContain('Safe');
     expect(legs.bookSlips[0]?.bookingCode).toBeNull();
-    expect(legs.bookSlips[1]?.copyText).toContain('SPORTYBET — TYPE THESE ON THE SITE');
+    expect(legs.bookSlips[1]?.copyText).toContain('SPORTYBET SLIP');
   });
 
   it('builds accumulators only from qualifying scores', () => {
@@ -154,25 +155,24 @@ describe('booking selection', () => {
     expect(accumulators.safe.note).not.toBe('NO QUALIFYING ACCUMULATOR.');
   });
 
-  it('puts last-5 scores and country league on the copy-paste pack', () => {
+  it('puts spaced safe % and pick on the copy-paste slip', () => {
     const { bookSlips } = selectBookingLegs([
       cand({
         fixtureId: 'pl',
         league: 'Premier League',
         market: 'HOME',
+        label: 'Home',
         deliveryRate: 82,
         modelProbability: 82,
+        safetyScore: 82,
         country: 'England',
-        last5Home: 'WWWDW',
-        scoresHome: '3-0 Fulham, 2-1 Villa, 1-1 City, 4-0 Wolves, 2-0 Palace',
-        last5Away: 'LLLDL',
-        scoresAway: '0-2 City, 1-3 Arsenal, 0-1 Brighton, 1-1 Everton, 0-2 Liverpool',
       }),
     ]);
     const copy = bookSlips[0]?.copyText ?? '';
-    expect(copy).toContain('England · Premier League');
-    expect(copy).toContain('last 5 WWWDW');
-    expect(copy).toContain('3-0 Fulham');
-    expect(copy).toContain('0-2 City');
+    expect(copy).toContain('Home vs Away');
+    expect(copy).toMatch(/Safe 82%/);
+    expect(copy).toContain('Stake: Home');
+    expect(copy).not.toContain('last 5');
+    expect(bookSlips[0]?.legs?.[0]).toMatchObject({ pick: 'Home', safety: 82 });
   });
 });

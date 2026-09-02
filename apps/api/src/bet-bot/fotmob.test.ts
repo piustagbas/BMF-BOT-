@@ -16,10 +16,16 @@ describe('fotmob form parsing', () => {
     expect(teamsFromLeaguePayload(payload)).toEqual([{ id: '9825', name: 'Arsenal', shortName: 'ARS' }]);
   });
 
-  it('looks up Man City against Manchester City', () => {
-    const dir = indexFotmobDirectory([{ id: '8456', name: 'Manchester City', shortName: 'Man City' }]);
-    expect(lookupFotmobId('Man City', dir)).toBe('8456');
+  it('does not mix Manchester United with Manchester City or Newcastle', () => {
+    const dir = indexFotmobDirectory([
+      { id: '10260', name: 'Manchester United', shortName: 'Man Utd' },
+      { id: '8456', name: 'Manchester City', shortName: 'Man City' },
+      { id: '10261', name: 'Newcastle United', shortName: 'Newcastle' },
+    ]);
+    expect(lookupFotmobId('Manchester United', dir)).toBe('10260');
+    expect(lookupFotmobId('Man Utd', dir)).toBe('10260');
     expect(lookupFotmobId('Manchester City', dir)).toBe('8456');
+    expect(lookupFotmobId('Newcastle United', dir)).toBe('10261');
   });
 
   it('builds last results newest first from finished fixtures', () => {

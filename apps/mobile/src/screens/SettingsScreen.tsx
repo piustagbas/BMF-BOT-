@@ -19,6 +19,7 @@ import {
   fetchSmartWallets,
   removeSmartWallet,
   resetSettings,
+  updateNotificationPreferences,
   sendTestNotification,
   updateRiskSettings,
   updateSettings,
@@ -108,7 +109,7 @@ export function SettingsScreen() {
     >
       <Text style={common.title}>Settings</Text>
       <Text style={common.subtitle}>
-        Configure risk filters and notifications. Auto trading stays off. Not financial advice.
+        Configure risk filters, notifications, and demo auto-trade. Real-money auto stays off. Not financial advice.
       </Text>
 
       {error ? (
@@ -147,6 +148,41 @@ export function SettingsScreen() {
           onChange={(v) => void run(() => updateSettings({ notifyRealTrades: v }))}
         />
         <Row
+          label="In-app notifications"
+          value={settings?.notifyInApp !== false}
+          onChange={(v) => void run(() => updateNotificationPreferences({ inApp: v }))}
+        />
+        <Row
+          label="Push notifications"
+          value={settings?.notifyPush !== false}
+          onChange={(v) => void run(() => updateNotificationPreferences({ push: v }))}
+        />
+        <Row
+          label="Buy confirmations"
+          value={settings?.notifyBuyConfirms !== false}
+          onChange={(v) => void run(() => updateNotificationPreferences({ buy: v }))}
+        />
+        <Row
+          label="Sell confirmations"
+          value={settings?.notifySellConfirms !== false}
+          onChange={(v) => void run(() => updateNotificationPreferences({ sell: v }))}
+        />
+        <Row
+          label="Failed transactions"
+          value={settings?.notifyTradeFailed !== false}
+          onChange={(v) => void run(() => updateNotificationPreferences({ failure: v }))}
+        />
+        <Row
+          label="Take profit alerts"
+          value={settings?.notifyTakeProfit !== false}
+          onChange={(v) => void run(() => updateNotificationPreferences({ takeProfit: v }))}
+        />
+        <Row
+          label="Stop loss alerts"
+          value={settings?.notifyStopLoss !== false}
+          onChange={(v) => void run(() => updateNotificationPreferences({ stopLoss: v }))}
+        />
+        <Row
           label="Telegram enabled"
           value={!!settings?.telegramEnabled}
           onChange={(v) => void run(() => updateSettings({ telegramEnabled: v }))}
@@ -163,8 +199,8 @@ export function SettingsScreen() {
         />
         <Text style={[common.cardBody, { marginTop: 6, color: colors.accent }]}>
           {settings?.telegramEnabled
-            ? 'Telegram ON — BUY setups go to Telegram as soon as the bot confirms them.'
-            : 'Telegram muted. Turn this ON (and keep TELEGRAM_* in .env) to get BUY alerts.'}
+            ? 'Telegram ON — trade success/failure results and eligible BUY setup alerts are sent here.'
+            : 'Telegram muted. Turn this ON (and keep TELEGRAM_* in .env) to receive trade results.'}
         </Text>
         <Text style={[common.cardBody, { marginTop: 4, color: colors.accent }]}>
           {settings?.whatsappEnabled
@@ -173,8 +209,8 @@ export function SettingsScreen() {
         </Text>
         <Text style={[common.cardBody, { marginTop: 4, color: colors.accent }]}>
           {settings?.emailEnabled
-            ? `Gmail/email ON — BUY setups go to ${notifStatus?.email?.to ?? 'ALERT_EMAIL'}.`
-            : 'Email muted. Add Gmail SMTP in .env, then enable this toggle.'}
+            ? `Gmail/email ON — trade results and BUY setups go to ${notifStatus?.email?.to ?? 'ALERT_EMAIL'}.`
+            : 'Email muted. Add Gmail SMTP in .env, then enable this toggle for trade results.'}
         </Text>
         <Text style={[common.cardBody, { marginTop: 8 }]}>
           Seeing BUY in the app without a ping? Keep Notify BUY setups ON plus Telegram
@@ -182,8 +218,39 @@ export function SettingsScreen() {
         </Text>
         <Text style={[common.cardBody, { marginTop: 8 }]}>
           Kill switch: {settings?.killSwitch ? 'ON' : 'OFF'} · Emergency:{' '}
-          {settings?.emergencyStop ? 'ON' : 'OFF'} · Auto always OFF via settings
+          {settings?.emergencyStop ? 'ON' : 'OFF'}
         </Text>
+      </View>
+
+      <View style={common.card}>
+        <Text style={common.cardTitle}>Demo auto-trade</Text>
+        <Text style={common.cardBody}>
+          These toggles fill DEMO / paper trades only when every hard test passes. If BUY or
+          ENTER shows but a test fails, auto does nothing — so you do not run a loss. Real
+          money still needs your wallet signature.
+        </Text>
+        <Text style={[common.cardBody, { marginTop: 8, color: colors.accent }]}>
+          Memecoin auto-trade is controlled per coin from the Scanner, Signals, or coin details
+          screen. Enabled coins: {settings?.autoTradeMemecoinAddresses?.length ?? 0}.
+        </Text>
+        <Row
+          label="Auto-trade Forex (demo)"
+          value={!!settings?.autoTradeForex}
+          onChange={(v) => void run(() => updateSettings({ autoTradeForex: v }))}
+        />
+        <Text style={[common.cardBody, { marginTop: 8, color: colors.accent }]}>
+          {(settings?.autoTradeMemecoinAddresses?.length ?? 0) > 0
+            ? 'Enabled memecoins fill only their own passing BUY setups.'
+            : 'No memecoins are enabled for auto-trade.'}{' '}
+          {settings?.autoTradeForex
+            ? 'Forex auto ON — demo BUY/SELL only after live recheck passes.'
+            : 'Forex auto OFF.'}
+        </Text>
+        {settings?.emergencyStop ? (
+          <Text style={[common.cardBody, { marginTop: 6, color: colors.danger }]}>
+            Emergency stop is ON — both auto toggles stay off until you clear it.
+          </Text>
+        ) : null}
       </View>
 
       <View style={common.card}>

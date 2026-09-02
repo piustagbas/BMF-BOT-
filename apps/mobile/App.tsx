@@ -1,13 +1,15 @@
 import React from 'react';
-import { ActivityIndicator, Pressable, Text, View } from 'react-native';
+import { ActivityIndicator, Platform, Pressable, Text, View } from 'react-native';
 import { NavigationContainer, DarkTheme, useNavigation } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { StatusBar } from 'expo-status-bar';
 import { Ionicons } from '@expo/vector-icons';
-import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AuthProvider, useAuth } from './src/auth/AuthContext';
+import { MemecoinAutoTradeProvider } from './src/settings/MemecoinAutoTradeContext';
+import { WalletProvider } from './src/wallet/WalletContext';
 import { BetSlipProvider, useBetSlip } from './src/bet/BetSlipContext';
 import { DashboardScreen } from './src/screens/DashboardScreen';
 import { ScannerScreen } from './src/screens/ScannerScreen';
@@ -22,6 +24,10 @@ import { SettingsScreen } from './src/screens/SettingsScreen';
 import { SmartMoneyScreen } from './src/screens/SmartMoneyScreen';
 import { TokenDetailsScreen } from './src/screens/TokenDetailsScreen';
 import { LoginScreen } from './src/screens/LoginScreen';
+import { PortfolioScreen } from './src/screens/PortfolioScreen';
+import { TradeHistoryScreen } from './src/screens/TradeHistoryScreen';
+import { NotificationsScreen } from './src/screens/NotificationsScreen';
+import { NotificationBell } from './src/components/NotificationBell';
 import { BetBotHomeScreen } from './src/screens/bet/BetBotHomeScreen';
 import { BetFixtureScreen } from './src/screens/bet/BetFixtureScreen';
 import { BetSlipScreen } from './src/screens/bet/BetSlipScreen';
@@ -71,7 +77,7 @@ function MoreStackNavigator() {
         component={MoreScreen}
         options={{ title: 'More' }}
       />
-      <MoreStack.Screen name="Paper" component={PaperScreen} options={{ title: 'Paper' }} />
+      <MoreStack.Screen name="Paper" component={PaperScreen} options={{ title: 'Demo' }} />
       <MoreStack.Screen name="Trade" component={TradeScreen} options={{ title: 'Trade' }} />
       <MoreStack.Screen
         name="Backtest"
@@ -98,6 +104,13 @@ function MoreStackNavigator() {
 }
 
 function Tabs() {
+  const insets = useSafeAreaInsets();
+  // Samsung 3-button nav (Back / Home / Recents) sits under a fixed-height tab bar.
+  // Use the system inset; if Android reports 0 (edge-to-edge quirk), keep a button-row gap.
+  const bottomInset =
+    insets.bottom > 0 ? insets.bottom : Platform.OS === 'android' ? 48 : 8;
+  const tabBarBody = 52;
+
   return (
     <Tab.Navigator
       screenOptions={({ route }) => ({
@@ -107,9 +120,9 @@ function Tabs() {
         tabBarStyle: {
           backgroundColor: colors.surface,
           borderTopColor: colors.border,
-          height: 58,
-          paddingBottom: 6,
-          paddingTop: 4,
+          height: tabBarBody + bottomInset,
+          paddingBottom: bottomInset,
+          paddingTop: 6,
         },
         tabBarActiveTintColor: colors.accent,
         tabBarInactiveTintColor: colors.muted,
@@ -135,7 +148,11 @@ function Tabs() {
       <Tab.Screen
         name="Home"
         component={DashboardScreen}
-        options={{ title: 'Home', headerTitle: () => <BrandHeaderTitle /> }}
+        options={{
+          title: 'Home',
+          headerTitle: () => <BrandHeaderTitle />,
+          headerRight: () => <NotificationBell />,
+        }}
       />
       <Tab.Screen name="Scanner" component={ScannerScreen} />
       <Tab.Screen name="Signals" component={SignalsScreen} />
@@ -228,7 +245,7 @@ function ForexBotStackNavigator() {
       <ForexStack.Screen
         name="ForexSignal"
         component={ForexSignalScreen}
-        options={{ title: 'Recheck live' }}
+        options={({ route }) => ({ title: route.params.symbol })}
       />
     </ForexStack.Navigator>
   );
@@ -277,6 +294,21 @@ function RootNavigator() {
         options={{ title: 'Token', presentation: 'card' }}
       />
       <RootStack.Screen
+        name="Notifications"
+        component={NotificationsScreen}
+        options={{ title: 'Notifications' }}
+      />
+      <RootStack.Screen
+        name="Portfolio"
+        component={PortfolioScreen}
+        options={{ title: 'Portfolio' }}
+      />
+      <RootStack.Screen
+        name="TradeHistory"
+        component={TradeHistoryScreen}
+        options={{ title: 'Trade history' }}
+      />
+      <RootStack.Screen
         name="BetBot"
         component={BetBotStackNavigator}
         options={{ headerShown: false, presentation: 'card' }}
@@ -294,12 +326,16 @@ export default function App() {
   return (
     <SafeAreaProvider>
       <AuthProvider>
-        <BetSlipProvider>
-          <NavigationContainer theme={navTheme}>
-            <StatusBar style="light" />
-            <RootNavigator />
-          </NavigationContainer>
-        </BetSlipProvider>
+        <MemecoinAutoTradeProvider>
+          <WalletProvider>
+            <BetSlipProvider>
+              <NavigationContainer theme={navTheme}>
+                <StatusBar style="light" />
+                <RootNavigator />
+              </NavigationContainer>
+            </BetSlipProvider>
+          </WalletProvider>
+        </MemecoinAutoTradeProvider>
       </AuthProvider>
     </SafeAreaProvider>
   );

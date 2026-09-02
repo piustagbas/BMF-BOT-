@@ -113,6 +113,15 @@ export function TradeScreen() {
           </Text>
         ) : null}
 
+        <View style={{ marginTop: spacing.md }}>
+          <Text style={common.cardTitle}>Memecoin auto-trade</Text>
+          <Text style={common.cardBody}>
+            Configure this per coin from Scanner, Signals, or coin details. Enabled coins:{' '}
+            {status?.autoTradeMemecoinAddresses?.length ?? 0}. Each enabled coin is filled only
+            when its own BUY passes every hard test.
+          </Text>
+        </View>
+
         <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginTop: spacing.md }}>
           <Pressable
             style={btn}

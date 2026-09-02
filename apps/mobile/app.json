@@ -3,7 +3,7 @@
     "name": "BMF Bot",
     "slug": "memecoinbot",
     "owner": "judecowart1",
-    "version": "0.1.2",
+    "version": "0.1.4",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "scheme": "memecoinbot",
@@ -26,7 +26,15 @@
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
       "package": "com.memecoinbot.app",
-      "permissions": ["INTERNET", "ACCESS_NETWORK_STATE"]
+      "versionCode": 14,
+      "permissions": [
+        "INTERNET",
+        "ACCESS_NETWORK_STATE"
+      ]
+    },
+    "androidNavigationBar": {
+      "backgroundColor": "#121A2B",
+      "barStyle": "light-content"
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -36,7 +44,7 @@
       "./plugins/withAndroidHttp1.js"
     ],
     "extra": {
-      "apiUrl": "https://bmf-bot-api.onrender.com/api",
+      "apiUrl": "https://spud-smashup-jawline.ngrok-free.dev/api",
       "eas": {
         "projectId": "27ac3cc8-cdbd-43c0-bed8-c104de59c22b"
       }

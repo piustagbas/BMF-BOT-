@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { lotsForRisk, pipValueUsd, pipsBetween, getPair, usdDirection } from './pairs';
-import { calibrateScore, inEntryZone, dedupeKey } from './analysis';
+import { calibrateScore, inEntryZone, dedupeKey, shouldAlertFx } from './analysis';
 import { antiOverfit } from './backtest';
 import { correlationBlock } from './risk';
 import { brokerExecutionChecks } from './execution';
@@ -75,9 +75,28 @@ describe('stale quotes and execution guards', () => {
     expect(isQuoteStale(old)).toBe(true);
   });
 
-  it('blocks live mode and kill switch', () => {
+  it('allows delayed Yahoo FX quotes that are still inside the paper window', () => {
+    const yahoo = quote({
+      source: 'yahoo-finance',
+      timestamp: new Date(Date.now() - 10 * 60_000).toISOString(),
+      ageMs: 10 * 60_000,
+      stale: false,
+      dataQuality: 'DEGRADED',
+    });
+    expect(isQuoteStale(yahoo)).toBe(false);
+  });
+
+  it('blocks live mode and kill switch, but allows demo fills', () => {
     expect(
       brokerExecutionChecks({ mode: 'PAPER', killSwitch: true, liveBlockedReason: 'no broker', quote: quote() }),
+    ).not.toContain('Kill switch is ON');
+    expect(
+      brokerExecutionChecks({
+        mode: 'LIVE',
+        killSwitch: true,
+        liveBlockedReason: 'No live FX broker adapter is connected. Paper/demo only.',
+        quote: quote(),
+      }),
     ).toContain('Kill switch is ON');
     expect(
       brokerExecutionChecks({
@@ -144,6 +163,23 @@ describe('correlation and calendar', () => {
   it('flags weekend close', () => {
     const sat = sessionSnapshot(new Date('2026-08-29T12:00:00Z'));
     expect(sat.forexOpen).toBe(false);
+  });
+});
+
+describe('FX alert vs BUY button', () => {
+  it('does not alert on a lean that is not tradeable', () => {
+    expect(
+      shouldAlertFx({ bias: 'BUY', buyPct: 72, sellPct: 28, tradeable: false }),
+    ).toBe(false);
+  });
+
+  it('alerts only when tradeable and lean is at least 60%', () => {
+    expect(
+      shouldAlertFx({ bias: 'BUY', buyPct: 72, sellPct: 28, tradeable: true }),
+    ).toBe(true);
+    expect(
+      shouldAlertFx({ bias: 'BUY', buyPct: 55, sellPct: 45, tradeable: true }),
+    ).toBe(false);
   });
 });
 

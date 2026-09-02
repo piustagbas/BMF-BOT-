@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { runScan } from './pipeline';
-import { analyzePair } from './analysis';
+import { analyzePair, buildFxWhyNotBuy } from './analysis';
+import { analyzeCandlestickStructure } from '@memecoinbot/indicators';
 import type { PairMarket } from './market';
 import { getPair } from './pairs';
 import type { FxCandle, FxQuote } from './types';
 import { sessionSnapshot } from './calendar';
-import { managePosition, openProtectedPosition } from './execution';
+import { managePosition, openProtectedPosition, recheckLive } from './execution';
 import type { FxSignal } from './types';
 
 function candles(trend: 'up' | 'down'): FxCandle[] {
@@ -69,7 +70,7 @@ describe('pipeline scan', () => {
     }
   });
 
-  it('refuses stale quotes for execution but still lists the pair', () => {
+  it('lists a pair even when the quote is explicitly stale', () => {
     const m = market({
       quote: {
         ...market().quote,
@@ -82,6 +83,26 @@ describe('pipeline scan', () => {
     expect(result.board).toHaveLength(1);
     expect(result.board[0]?.symbol).toBe('EURUSD');
     expect(result.board[0]?.tradeable).toBe(false);
+  });
+
+  it('does not reject Yahoo DEGRADED quotes at scan time', () => {
+    const m = market({
+      quote: { ...market().quote, dataQuality: 'DEGRADED', source: 'yahoo-finance' },
+    });
+    const now = new Date('2026-08-26T14:00:00Z');
+    const result = analyzePair(m, sessionSnapshot(now), []);
+    expect(result.filtersFailed.some((f) => /live tick/i.test(f))).toBe(false);
+    expect(result.filtersFailed.some((f) => /synthetic/i.test(f))).toBe(false);
+  });
+
+  it('rejects synthetic candles for trading', () => {
+    const m = market({
+      quote: { ...market().quote, dataQuality: 'SYNTHETIC', source: 'open.er-api.com' },
+    });
+    const now = new Date('2026-08-26T14:00:00Z');
+    const result = analyzePair(m, sessionSnapshot(now), []);
+    expect(result.tradeable).toBe(false);
+    expect(result.filtersFailed.join(' ')).toMatch(/synthetic/i);
   });
 });
 
@@ -140,5 +161,73 @@ describe('analysis + manage', () => {
     expect(afterTp1.position.tp1Filled).toBe(true);
     expect(afterTp1.position.breakevenOn).toBe(true);
     expect(afterTp1.position.lotsOpen).toBeLessThan(0.2);
+  });
+
+  it('allows paper recheck on Yahoo DEGRADED and blocks synthetic', () => {
+    const m = market({
+      quote: { ...market().quote, dataQuality: 'DEGRADED', source: 'yahoo-finance' },
+    });
+    const now = new Date('2026-08-26T14:00:00Z');
+    const analysis = analyzePair(m, sessionSnapshot(now), []);
+    const signal = {
+      id: 's1',
+      dedupeKey: 'k',
+      symbol: 'EURUSD',
+      side: 'BUY' as const,
+      quote: m.quote,
+      zone: analysis.zone ?? { low: m.quote.mid - 0.01, high: m.quote.mid + 0.01, mid: m.quote.mid, widthPips: 20 },
+      stopLoss: analysis.stopLoss ?? m.quote.mid - 0.002,
+      takeProfit1: analysis.takeProfit1 ?? m.quote.mid + 0.002,
+      takeProfit2: analysis.takeProfit2 ?? m.quote.mid + 0.004,
+      stopPips: 20,
+      tp1Pips: 20,
+      tp2Pips: 40,
+      riskReward1: 1,
+      suggestedLots: 0.2,
+      riskUsd: 100,
+      pipValueUsd: 2,
+      setupQuality: 70,
+      breakdown: { trend: 20, pullback: 10, structure: 10, reward: 10, spread: 8, session: 8, freshness: 4, total: 70 },
+      confidence: {
+        setupQuality: 70,
+        estimatedHitRateLowPct: 50,
+        estimatedHitRateHighPct: 56,
+        sampleNote: 'x',
+        warning: 'not a win probability',
+      },
+      reasons: ['test'],
+      filtersFailed: [],
+      expiresAt: new Date(now.getTime() + 60 * 60_000).toISOString(),
+      createdAt: now.toISOString(),
+      pipeline: { stage: 'NOTIFY' as const, steps: [] },
+      notified: true,
+    } satisfies FxSignal;
+    const paper = recheckLive({ signal, market: m, now, requestedSide: 'BUY', mode: 'PAPER' });
+    expect(paper.blockers.join(' ')).not.toMatch(/live tick/i);
+    const synth = recheckLive({
+      signal,
+      market: { ...m, quote: { ...m.quote, dataQuality: 'SYNTHETIC' } },
+      now,
+      requestedSide: 'BUY',
+      mode: 'PAPER',
+    });
+    expect(synth.ok).toBe(false);
+    expect(synth.blockers.join(' ')).toMatch(/synthetic/i);
+  });
+
+  it('explains why not buy with candlestick + gates', () => {
+    const m = market();
+    const now = new Date('2026-08-26T14:00:00Z');
+    const analysis = analyzePair(m, sessionSnapshot(now), []);
+    const panel = buildFxWhyNotBuy({
+      analysis,
+      market: m,
+      candles: analyzeCandlestickStructure(m.candles),
+      session: sessionSnapshot(now),
+      requestedSide: 'BUY',
+    });
+    expect(panel.items.some((i) => i.key === 'sig_candlestick')).toBe(true);
+    expect(panel.items.some((i) => i.key === 'quality')).toBe(true);
+    expect(panel.title === 'Why Not Buy' || panel.title === 'Why This Passed').toBe(true);
   });
 });

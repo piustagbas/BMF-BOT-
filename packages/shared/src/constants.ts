@@ -187,9 +187,9 @@ export const DISCOVERY_DEFAULTS = {
  */
 export const VERIFIED_SMART_WALLETS: SmartWallet[] = [];
 
-/** Scanner / signals focus: pairs 1–10 days old (skip brand-new launches and older coins). */
-export const NEW_COIN_MIN_AGE_HOURS = 24;
-export const NEW_COIN_MAX_AGE_HOURS = 240;
+/** Scanner / signals: pairs from 1 minute to 30 days. Scam flags still block BUY. */
+export const NEW_COIN_MIN_AGE_HOURS = 1 / 60;
+export const NEW_COIN_MAX_AGE_HOURS = 24 * 30;
 
 export function isNewCoinAge(pairAgeHours: number | null | undefined): boolean {
   if (pairAgeHours == null || !Number.isFinite(pairAgeHours)) return false;
@@ -200,6 +200,10 @@ export function isNewCoinAge(pairAgeHours: number | null | undefined): boolean {
 
 export function formatPairAgeHours(pairAgeHours: number | null | undefined): string | null {
   if (pairAgeHours == null || !Number.isFinite(pairAgeHours)) return null;
+  if (pairAgeHours < 1) {
+    const mins = Math.max(1, Math.round(pairAgeHours * 60));
+    return `${mins}m old`;
+  }
   if (pairAgeHours < 24) return `${Math.max(1, Math.round(pairAgeHours))}h old`;
   const days = Math.round((pairAgeHours / 24) * 10) / 10;
   return `${days}d old`;

@@ -21,11 +21,14 @@ import {
   type BetFixture,
   type BetPickRow,
 } from '../../api/client';
+import { betMatchKey, lookupBetCardAnalysis, rememberBetPick } from '../../bet/betAnalysisCache';
 import { useBetSlip } from '../../bet/BetSlipContext';
 import { StatusBadge } from '../../components/StatusBadge';
 import { colors, common } from '../../theme';
 import type { BetBotStackParamList } from '../../navigation/types';
 import { BookmakerSlips } from './BookmakerSlips';
+import { LiveScoreboard } from './LiveScoreboard';
+import { MarketLines, SplitTeams, KickoffDate, betCardStyle, splitMatch, CountryLeagueLine } from './BetCardLayout';
 
 type Props = NativeStackScreenProps<BetBotStackParamList, 'BetHome'>;
 type Tab =
@@ -41,6 +44,14 @@ type Tab =
   | 'ELITE'
   | 'ACCA'
   | 'AVOID';
+function footballDateKey(date: Date): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Africa/Lagos',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(date);
+}
 
 type ListRow =
   | { key: string; kind: 'section'; title: string }
@@ -48,7 +59,17 @@ type ListRow =
   | { key: string; kind: 'match'; fixture: BetFixture; pick?: BetPickRow; scoresFirst?: boolean }
   | { key: string; kind: 'pick'; pick: BetPickRow }
   | { key: string; kind: 'leg'; leg: BetBookingLeg }
-  | { key: string; kind: 'avoid'; fixtureId: string; match: string; reasons: string[] }
+  | {
+      key: string;
+      kind: 'avoid';
+      fixtureId: string;
+      match: string;
+      reasons: string[];
+      country?: string;
+      countryFlag?: string;
+      league?: string;
+      leagueHeading?: string;
+    }
   | { key: string; kind: 'acca'; title: string; row: BetAccumulator };
 
 export function BetBotHomeScreen({ navigation }: Props) {
@@ -56,10 +77,14 @@ export function BetBotHomeScreen({ navigation }: Props) {
   const [tab, setTab] = useState<Tab>('TODAY');
   const [q, setQ] = useState('');
   const [league, setLeague] = useState('');
-  const [date, setDate] = useState('');
+  const [marketFilter, setMarketFilter] = useState('');
+  const [riskFilter, setRiskFilter] = useState('');
+  const [minimumProbability, setMinimumProbability] = useState('');
+  const [minimumConfidence, setMinimumConfidence] = useState('');
   const [popular, setPopular] = useState(false);
   const [showFilters, setShowFilters] = useState(false);
   const [fixtures, setFixtures] = useState<BetFixture[]>([]);
+  const [todayFixtures, setTodayFixtures] = useState<BetFixture[]>([]);
   const [live, setLive] = useState<BetFixture[]>([]);
   const [upcoming, setUpcoming] = useState<BetFixture[]>([]);
   const [liveNote, setLiveNote] = useState('');
@@ -85,8 +110,9 @@ export function BetBotHomeScreen({ navigation }: Props) {
         label: leg.label,
         odds: leg.odds.bestOdds ?? leg.analysedOdds ?? null,
         bookmaker: slip.bookmaker,
-        safetyScore: leg.safetyScore,
+        safetyScore: leg.analysisScore ?? leg.safetyScore,
         riskLevel: leg.riskLevel,
+        cardLines: leg.cardLines,
       })),
     );
     navigation.navigate('BetSlip');
@@ -105,61 +131,143 @@ export function BetBotHomeScreen({ navigation }: Props) {
         label: leg.label,
         odds: leg.odds.bestOdds ?? leg.analysedOdds ?? null,
         bookmaker: slip.bookmaker,
-        safetyScore: leg.safetyScore,
+        safetyScore: leg.analysisScore ?? leg.safetyScore,
         riskLevel: leg.riskLevel,
+        cardLines: leg.cardLines,
       })),
     );
     navigation.navigate('BetSlip');
   };
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const [userRefreshing, setUserRefreshing] = useState(false);
+  const [focusTick, setFocusTick] = useState(0);
+
+  const rememberPicks = (nextPicks: NonNullable<typeof picks>) => {
+    const pools = [...(nextPicks.safest ?? []), ...(nextPicks.popularPicks ?? []), ...(nextPicks.otherPicks ?? [])];
+    for (const p of pools) rememberBetPick(p);
+  };
+
+  const load = useCallback(async (opts?: { background?: boolean }) => {
+    const background = opts?.background === true;
+    if (!background) {
+      setLoading(true);
+      setPicksLoading(true);
+    }
     setError(null);
+    const shared = {
+      q: q.trim() || undefined,
+      league: league.trim() || undefined,
+      popular,
+    };
     try {
-      const [st, fx, board] = await Promise.all([
+      const [st, fxToday, board] = await Promise.all([
         fetchBetStatus().catch(() => null),
-        fetchBetFixtures({
-          q: q.trim() || undefined,
-          league: league.trim() || undefined,
-          date: date.trim() || undefined,
-          popular,
-        }),
-        fetchBetLiveFixtures({
-          q: q.trim() || undefined,
-          league: league.trim() || undefined,
-          popular,
-        }).catch(() => null),
+        fetchBetFixtures({ ...shared, day: 'today' }),
+        fetchBetLiveFixtures({ ...shared, day: 'today' }).catch(() => null),
       ]);
-      setStatus(
-        [st?.footballData, st?.oddsApi, st?.ai, st?.bookingCodes].filter(Boolean).join(' · '),
-      );
-      setDisclaimer(fx.disclaimer);
-      setSource(board?.source || fx.source);
-      setNote(fx.warning || fx.note || '');
-      setFixtures(fx.items);
+      setTodayFixtures(fxToday.items);
+      setFixtures(fxToday.items);
       setLive(board?.live ?? []);
       setUpcoming(board?.upcoming ?? []);
       setLiveNote(board?.note ?? '');
+      setStatus(
+        [st?.footballData, st?.oddsApi, st?.ai, st?.bookingCodes].filter(Boolean).join(' · '),
+      );
+      setDisclaimer(fxToday.disclaimer);
+      setSource(board?.source || fxToday.source);
+      setNote(fxToday.warning || fxToday.note || '');
+      if (!background) setLoading(false);
+
+      const [fxAll, nextPicks] = await Promise.all([
+        fetchBetFixtures(shared).catch(() => null),
+        fetchBetPicks({
+          day: 'today',
+          market: marketFilter.trim() || undefined,
+          risk: riskFilter.trim() || undefined,
+          minimumProbability: Number.isFinite(Number(minimumProbability)) && minimumProbability ? Number(minimumProbability) : undefined,
+          minimumConfidence: Number.isFinite(Number(minimumConfidence)) && minimumConfidence ? Number(minimumConfidence) : undefined,
+        }).catch(() => null),
+      ]);
+      if (fxAll?.items?.length) {
+        const todayKey = footballDateKey(new Date());
+        const todayFromAll = fxAll.items.filter(
+          (f) => f.live || footballDateKey(new Date(f.kickoffUtc)) === todayKey,
+        );
+        const mergedToday = uniqueFixtures([...fxToday.items, ...todayFromAll]);
+        setTodayFixtures(mergedToday);
+        setFixtures(uniqueFixtures([...mergedToday, ...fxAll.items]));
+      }
+      if (nextPicks) {
+        setPicks(nextPicks);
+        rememberPicks(nextPicks);
+      }
+      if (nextPicks?.aiWarming) {
+        setTimeout(() => {
+          void fetchBetPicks({
+            day: 'today',
+            market: marketFilter.trim() || undefined,
+            risk: riskFilter.trim() || undefined,
+            minimumProbability:
+              Number.isFinite(Number(minimumProbability)) && minimumProbability
+                ? Number(minimumProbability)
+                : undefined,
+            minimumConfidence:
+              Number.isFinite(Number(minimumConfidence)) && minimumConfidence
+                ? Number(minimumConfidence)
+                : undefined,
+          })
+            .then((refreshed) => {
+              if (refreshed) {
+                setPicks(refreshed);
+                rememberPicks(refreshed);
+              }
+            })
+            .catch(() => undefined);
+        }, 30_000);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load fixtures');
-    } finally {
-      setLoading(false);
-    }
-    setPicksLoading(true);
-    try {
-      setPicks(await fetchBetPicks());
-    } catch {
-      setPicks(null);
+      if (!background) setLoading(false);
     } finally {
       setPicksLoading(false);
+      if (!background) setLoading(false);
     }
-  }, [q, league, date, popular]);
+  }, [q, league, marketFilter, riskFilter, minimumProbability, minimumConfidence, popular]);
 
   const loadRef = useRef(load);
   loadRef.current = load;
+  const hasBoardDataRef = useRef(false);
+  const fixturesReadyRef = useRef(false);
+  const refreshLiveQuiet = useCallback(async () => {
+    if (!fixturesReadyRef.current) return;
+    try {
+      const board = await fetchBetLiveFixtures({
+        q: q.trim() || undefined,
+        league: league.trim() || undefined,
+        popular,
+        day: 'today',
+      });
+      setLive(board?.live ?? []);
+      setUpcoming(board?.upcoming ?? []);
+      setLiveNote(board?.note ?? '');
+      if (board?.source) setSource(board.source);
+    } catch {
+      /* keep last live board */
+    }
+  }, [q, league, popular]);
+  const quietRef = useRef(refreshLiveQuiet);
+  quietRef.current = refreshLiveQuiet;
   useFocusEffect(
     useCallback(() => {
-      void loadRef.current();
+      setFocusTick((n) => n + 1);
+      void loadRef.current({ background: hasBoardDataRef.current }).finally(() => {
+        fixturesReadyRef.current = true;
+        hasBoardDataRef.current = true;
+      });
+      const tick = setInterval(() => {
+        void quietRef.current();
+      }, 25000);
+      return () => clearInterval(tick);
     }, []),
   );
 
@@ -178,61 +286,101 @@ export function BetBotHomeScreen({ navigation }: Props) {
     { key: 'AVOID', label: 'Avoid' },
   ];
 
+  const selectTab = (nextTab: Tab) => {
+    setTab(nextTab);
+  };
+
   const boardMatches = useMemo(() => uniqueFixtures([...live, ...upcoming, ...fixtures]), [live, upcoming, fixtures]);
   const pickById = useMemo(() => {
     const map = new Map<string, BetPickRow>();
-    for (const p of [...(picks?.safest ?? []), ...(picks?.highOdds ?? []), ...(picks?.bestValue ?? [])]) {
-      if (!map.has(p.fixtureId)) map.set(p.fixtureId, p);
+    const remember = (key: string, p: BetPickRow) => {
+      if (!key || map.has(key)) return;
+      map.set(key, p);
+    };
+    const pools = [...(picks?.safest ?? []), ...(picks?.popularPicks ?? []), ...(picks?.otherPicks ?? [])];
+    for (const p of pools) {
+      remember(p.fixtureId, p);
+      remember(matchKey(p.home, p.away, p.kickoffUtc), p);
+      remember(betMatchKey(p.home, p.away, p.kickoffUtc), p);
     }
     return map;
   }, [picks]);
+  const pickFor = useCallback(
+    (f: { id: string; home: { name: string }; away: { name: string }; kickoffUtc: string }) => {
+      const keys = [
+        f.id,
+        matchKey(f.home.name, f.away.name, f.kickoffUtc),
+        betMatchKey(f.home.name, f.away.name, f.kickoffUtc),
+      ];
+      for (const key of keys) {
+        const hit = pickById.get(key);
+        if (hit) return hit;
+      }
+      return undefined;
+    },
+    [pickById],
+  );
 
   const rows: ListRow[] = useMemo(() => {
     const dayMatches = (which: 'today' | 'tomorrow') => {
-      const key = which === 'today' ? localDayKey() : tomorrowKey();
-      return boardMatches
-        .filter((f) => (which === 'today' && f.live) || localDayKey(f.kickoffUtc) === key)
+      const targetDate = footballDateKey(new Date(Date.now() + (which === 'today' ? 0 : 24 * 60 * 60 * 1000)));
+      const listed = boardMatches
+        .filter((f) => (which === 'today' && f.live) || footballDateKey(new Date(f.kickoffUtc)) === targetDate)
         .sort((a, b) => Number(Boolean(b.live)) - Number(Boolean(a.live)) || a.kickoffUtc.localeCompare(b.kickoffUtc));
+      if (which === 'today' && listed.length === 0) {
+        const horizon = Date.now() + 36 * 60 * 60 * 1000;
+        return boardMatches
+          .filter((f) => f.live || Date.parse(f.kickoffUtc) <= horizon)
+          .sort((a, b) => Number(Boolean(b.live)) - Number(Boolean(a.live)) || a.kickoffUtc.localeCompare(b.kickoffUtc));
+      }
+      return listed;
     };
     const toMatchRow = (scoresFirst: boolean) => (f: BetFixture) => ({
       key: f.id,
       kind: 'match' as const,
       fixture: f,
-      pick: pickById.get(f.id),
+      pick: pickFor(f),
       scoresFirst,
     });
     const scoreOfFixture = (f: BetFixture) => {
-      const p = pickById.get(f.id);
+      const p = pickFor(f);
       return p?.analysisScore ?? p?.safetyScore ?? 0;
     };
     const scoreOfPick = (p: BetPickRow | BetBookingLeg) => p.analysisScore ?? p.safetyScore ?? 0;
     if (tab === 'TODAY') {
-      return groupByPopularAndLeague(dayMatches('today'), popular, toMatchRow(false), {
+      const todayAll = todayFixtures.length
+        ? todayFixtures
+        : dayMatches('today');
+      return groupByPopularAndLeague(todayAll, popular, toMatchRow(false), {
         hideDayHeaders: true,
-        scoreOf: scoreOfFixture,
+        countryFirst: true,
       });
     }
     if (tab === 'TOMORROW') {
       return groupByPopularAndLeague(dayMatches('tomorrow'), popular, toMatchRow(false), {
-        hideDayHeaders: true,
-        scoreOf: scoreOfFixture,
+        countryFirst: true,
       });
     }
     if (tab === 'MULTISCORE') {
-      return groupByPopularAndLeague(picks?.multiScore ?? [], popular, (p, i) => ({
+      const ms = picks?.multiScore?.length ? picks.multiScore : (picks?.safest ?? []).filter((p) => p.multiScore);
+      return groupByPopularAndLeague(ms, popular, (p, i) => ({
         key: `${p.fixtureId}-ms-${i}`,
         kind: 'pick' as const,
         pick: p,
-      }), { scoreOf: scoreOfPick });
+      }), { scoreOf: scoreOfPick, scoreFirst: true, hideDayHeaders: true });
     }
     if (tab === 'LIVE') {
-      return groupByPopularAndLeague([...live, ...upcoming], popular, toMatchRow(false), {
-        scoreOf: scoreOfFixture,
-      });
+      const inPlay = live.filter((f) => f.live);
+      return groupByPopularAndLeague(inPlay, popular, (f) => ({
+        key: f.id,
+        kind: 'fixture' as const,
+        fixture: f,
+      }), { hideDayHeaders: true, scoreFirst: true });
     }
     if (tab === 'FIXTURES') {
       return groupByPopularAndLeague(fixtures, popular, toMatchRow(false), {
         scoreOf: scoreOfFixture,
+        scoreFirst: true,
       });
     }
     if (tab === 'BOOKING') {
@@ -242,7 +390,7 @@ export function BetBotHomeScreen({ navigation }: Props) {
         key: `${leg.fixtureId}-${leg.market}`,
         kind: 'leg' as const,
         leg,
-      }), { scoreOf: scoreOfPick });
+      }), { scoreOf: scoreOfPick, scoreFirst: true, hideDayHeaders: true });
     }
     if (tab === 'AVOID') {
       return (picks?.avoid ?? []).map((a) => ({
@@ -251,6 +399,10 @@ export function BetBotHomeScreen({ navigation }: Props) {
         fixtureId: a.fixtureId,
         match: a.match,
         reasons: a.reasons,
+        country: a.country,
+        countryFlag: a.countryFlag,
+        league: a.league,
+        leagueHeading: a.leagueHeading,
       }));
     }
     if (tab === 'ACCA') {
@@ -262,34 +414,52 @@ export function BetBotHomeScreen({ navigation }: Props) {
         { key: 'high', kind: 'acca' as const, title: 'High odds (70+)', row: acc.highOdds },
       ];
     }
+    const safestPool = picks?.safest?.length
+      ? picks.safest
+      : [...(picks?.popularPicks ?? []), ...(picks?.otherPicks ?? [])];
+    if (tab === 'SAFEST') {
+      const todayTmr = safestPool.filter(
+        (p) => isOnCalendarDay(p.kickoffUtc, 'today') || isOnCalendarDay(p.kickoffUtc, 'tomorrow'),
+      );
+      return groupByPopularAndLeague(todayTmr.length ? todayTmr : safestPool, false, (p, i) => ({
+        key: `${p.fixtureId}-${p.market}-${i}`,
+        kind: 'pick' as const,
+        pick: p,
+      }), { scoreOf: scoreOfPick, scoreFirst: true });
+    }
     const pool =
-      tab === 'SAFEST'
-        ? [...(picks?.popularPicks ?? []), ...(picks?.otherPicks ?? [])].length
-          ? [...(picks?.popularPicks ?? []), ...(picks?.otherPicks ?? [])]
-          : picks?.safest ?? []
-        : tab === 'VALUE'
-          ? picks?.bestValue ?? []
+      tab === 'VALUE'
+          ? picks?.bestValue?.length
+            ? picks.bestValue
+            : safestPool
           : tab === 'HIGH'
-            ? picks?.highOdds ?? []
-            : picks?.elite ?? [];
-    return groupByPopularAndLeague(pool, tab === 'ELITE', (p, i) => ({
+            ? picks?.highOdds?.length
+              ? picks.highOdds
+              : safestPool
+            : picks?.elite?.length
+              ? picks.elite
+              : safestPool.slice(0, 16);
+    return groupByPopularAndLeague(pool, false, (p, i) => ({
       key: `${p.fixtureId}-${p.market}-${i}`,
       kind: 'pick' as const,
       pick: p,
-    }), { scoreOf: scoreOfPick });
-  }, [tab, live, upcoming, fixtures, picks, popular, boardMatches, pickById]);
+    }), { scoreOf: scoreOfPick, scoreFirst: true, hideDayHeaders: true });
+  }, [tab, live, upcoming, fixtures, todayFixtures, picks, popular, boardMatches, pickFor]);
 
   const emptyCopy = () => {
     if (loading || picksLoading) return 'Loading…';
-    if (tab === 'LIVE') return 'No live or upcoming matches in this filter. Pull to refresh.';
-    if (tab === 'TODAY') return 'No matches today in this filter. Pull to refresh.';
-    if (tab === 'TOMORROW') return 'No matches tomorrow in this filter. Pull to refresh.';
+    if (tab === 'LIVE') return 'No live matches right now. Pull to refresh.';
+    if (tab === 'TODAY') return 'No matches on the board yet. Pull to refresh — feeds can lag around midnight.';
+    if (tab === 'TOMORROW') return 'No matches scheduled for tomorrow. Pull to refresh.';
     if (tab === 'MULTISCORE') return 'Waiting on multi-score combos (2-0, 2-1, 3-0, 3-1 or 0-2, 1-2, 0-3, 1-3). Pull to refresh.';
     if (tab === 'HIGH') return 'Waiting on high-odds markets from match stats. Pull to refresh.';
+    if (tab === 'VALUE') return 'Waiting on value picks. Pull to refresh after fixtures load.';
+    if (tab === 'ELITE') return 'Waiting on top-scoring picks. Pull to refresh after fixtures load.';
     if (tab === 'FIXTURES') return 'No fixtures in this filter.';
     if (tab === 'BOOKING') return 'Waiting on today’s slip. Pull to refresh after fixtures load.';
-    if (tab === 'AVOID') return 'No risk flags on the current sample.';
+    if (tab === 'AVOID') return 'No matches to skip on this sample. Pull to refresh.';
     if (tab === 'ACCA') return 'Waiting on accumulator legs. Pull to refresh.';
+    if (tab === 'SAFEST') return 'No today/tomorrow safest picks in this filter. Pull to refresh after fixtures load.';
     return 'Waiting on picks. Pull to refresh after fixtures load.';
   };
 
@@ -320,10 +490,11 @@ export function BetBotHomeScreen({ navigation }: Props) {
           return (
             <Pressable
               key={t.key}
-              onPress={() => setTab(t.key)}
+              onPress={() => selectTab(t.key)}
+              hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
               style={{
-                height: 28,
-                paddingHorizontal: 10,
+                height: 32,
+                paddingHorizontal: 12,
                 justifyContent: 'center',
                 alignItems: 'center',
                 borderRadius: 6,
@@ -341,23 +512,29 @@ export function BetBotHomeScreen({ navigation }: Props) {
       </ScrollView>
 
       <FlatList
+        key={tab}
+        extraData={[tab, picksLoading, pickById, focusTick]}
         style={{ flex: 1 }}
         data={rows}
         keyExtractor={(item) => item.key}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
-        contentContainerStyle={{ paddingBottom: 48, flexGrow: 1 }}
+        contentContainerStyle={{ paddingBottom: 56, flexGrow: 1 }}
+        ItemSeparatorComponent={() => <View style={{ height: 2 }} />}
         refreshControl={
           <RefreshControl
-            refreshing={loading || picksLoading}
-            onRefresh={() => void load()}
+            refreshing={userRefreshing}
+            onRefresh={() => {
+              setUserRefreshing(true);
+              void load().finally(() => setUserRefreshing(false));
+            }}
             tintColor={colors.accent}
           />
         }
         ListHeaderComponent={
           <View>
             <Text style={[common.cardBody, { marginBottom: 8 }]} numberOfLines={showFilters ? 8 : 3}>
-              Analysis only. Not Bet9ja/SportyBet. Every match is listed by day — popular and other leagues from all countries, with the country flag. Highest analysis scores are on the cards and sit at the top of each group.
+              Analysis only. Not Bet9ja/SportyBet. Each card shows only that match’s Safest pick. Tap a card to see the Safest pick and qualified betting options. Multiscore is only on the Multiscore tab.
               {disclaimer ? ` ${disclaimer}` : ''}
             </Text>
             <View style={{ flexDirection: 'row', gap: 8, marginBottom: 8 }}>
@@ -381,20 +558,45 @@ export function BetBotHomeScreen({ navigation }: Props) {
                   style={inputStyle}
                   onSubmitEditing={() => void load()}
                 />
-                <View style={{ flexDirection: 'row', gap: 8, marginBottom: 8 }}>
+                <TextInput
+                  value={league}
+                  onChangeText={setLeague}
+                  placeholder="League"
+                  placeholderTextColor={colors.muted}
+                  style={inputStyle}
+                />
+                <View style={{ flexDirection: 'row', gap: 8 }}>
                   <TextInput
-                    value={league}
-                    onChangeText={setLeague}
-                    placeholder="League"
+                    value={marketFilter}
+                    onChangeText={setMarketFilter}
+                    placeholder="Market e.g. OVER_1_5"
                     placeholderTextColor={colors.muted}
-                    style={[inputStyle, { flex: 1, marginBottom: 0 }]}
+                    style={[inputStyle, { flex: 1 }]}
                   />
                   <TextInput
-                    value={date}
-                    onChangeText={setDate}
-                    placeholder="YYYY-MM-DD"
+                    value={riskFilter}
+                    onChangeText={setRiskFilter}
+                    placeholder="Risk"
                     placeholderTextColor={colors.muted}
-                    style={[inputStyle, { width: 120, marginBottom: 0 }]}
+                    style={[inputStyle, { width: 90 }]}
+                  />
+                </View>
+                <View style={{ flexDirection: 'row', gap: 8 }}>
+                  <TextInput
+                    value={minimumProbability}
+                    onChangeText={setMinimumProbability}
+                    placeholder="Min probability %"
+                    placeholderTextColor={colors.muted}
+                    keyboardType="numeric"
+                    style={[inputStyle, { flex: 1 }]}
+                  />
+                  <TextInput
+                    value={minimumConfidence}
+                    onChangeText={setMinimumConfidence}
+                    placeholder="Min confidence %"
+                    placeholderTextColor={colors.muted}
+                    keyboardType="numeric"
+                    style={[inputStyle, { flex: 1 }]}
                   />
                 </View>
                 <Pressable
@@ -428,17 +630,20 @@ export function BetBotHomeScreen({ navigation }: Props) {
             </Text>
             {tab === 'TODAY' ? (
               <Text style={[common.cardBody, { marginBottom: 8 }]} numberOfLines={3}>
-                Every match kicking off today, every country. The analysis score is on the card when ready — highest first.
+                {loading
+                  ? 'Loading today’s matches from all countries…'
+                  : `${todayFixtures.length || rows.filter((r) => r.kind === 'match').length} matches today across ${new Set(todayFixtures.map((f) => f.country).filter(Boolean)).size || 'many'} countries.`}{' '}
+                England, Spain, Italy, Germany, France, Nigeria, Saudi, Japan, Brazil, USA, and more.
               </Text>
             ) : null}
             {tab === 'TOMORROW' ? (
               <Text style={[common.cardBody, { marginBottom: 8 }]} numberOfLines={3}>
-                Every match kicking off tomorrow, every country. Highest analysis scores sit at the top of each league.
+                Tomorrow’s football matches, grouped by top countries and leagues. Each card has the kick-off date and that match’s analysis.
               </Text>
             ) : null}
             {tab === 'MULTISCORE' ? (
               <Text style={[common.cardBody, { marginBottom: 8 }]} numberOfLines={4}>
-                Multi-score is a correct-score combo: home 2-0, 2-1, 3-0, 3-1 or away 0-2, 1-2, 0-3, 1-3. One bundle per match from the stats. Confirm the box on Bet9ja/SportyBet.
+                Multiscore only lives on this tab: home 2-0, 2-1, 3-0, 3-1 or away 0-2, 1-2, 0-3, 1-3. Confirm the box on Bet9ja/SportyBet.
               </Text>
             ) : null}
             {tab === 'HIGH' ? (
@@ -448,7 +653,9 @@ export function BetBotHomeScreen({ navigation }: Props) {
             ) : null}
             {tab === 'LIVE' ? (
               <Text style={[common.cardBody, { marginBottom: 8 }]} numberOfLines={3}>
-                {liveNote || 'All live and upcoming matches from every country. Popular and other leagues, grouped by flag · country · league.'}
+                {live.length
+                  ? liveNote || 'Live scores only. JSON feeds — ads blocked. Scores refresh automatically.'
+                  : liveNote || 'No live games right now. Pull to refresh.'}
               </Text>
             ) : null}
             {tab === 'FIXTURES' ? (
@@ -495,9 +702,16 @@ export function BetBotHomeScreen({ navigation }: Props) {
                 Accumulators use the strongest available legs. Confirm prices on Bet9ja/SportyBet.
               </Text>
             ) : null}
+            {tab === 'AVOID' ? (
+              <Text style={[common.cardBody, { marginBottom: 8 }]} numberOfLines={3}>
+                Matches to skip: safety below 70%, rejected markets, or conflicting stats. Reasons are on the card.
+              </Text>
+            ) : null}
             {tab === 'SAFEST' || tab === 'VALUE' || tab === 'ELITE' ? (
               <Text style={[common.cardBody, { marginBottom: 8 }]} numberOfLines={4}>
-                {picks?.note ?? 'One pick per match with the analysis score on the card. Popular and other leagues from every country, with flags.'}
+                {tab === 'SAFEST'
+                  ? 'Today and tomorrow, highest safety % first in each league. The Safest line on the card is the same pick you see when you open the match.'
+                  : picks?.note ?? 'One pick per match with the safety % on the card. Popular and other leagues from every country, with flags.'}
               </Text>
             ) : null}
             {loading && rows.length === 0 ? <ActivityIndicator color={colors.accent} /> : null}
@@ -509,7 +723,7 @@ export function BetBotHomeScreen({ navigation }: Props) {
         renderItem={({ item }) => {
           if (item.kind === 'section') {
             return (
-              <View style={{ paddingTop: 12, paddingBottom: 4 }}>
+              <View style={{ paddingTop: 12, paddingBottom: 6 }}>
                 <Text style={{ color: colors.accent, fontWeight: '800', fontSize: 13 }}>{item.title}</Text>
               </View>
             );
@@ -518,69 +732,64 @@ export function BetBotHomeScreen({ navigation }: Props) {
             const f = item.fixture;
             return (
               <Pressable
-                style={common.card}
+                style={betCardStyle}
                 onPress={() => navigation.navigate('BetFixture', { id: f.id })}
               >
-                <View style={common.row}>
-                  <Text style={[common.cardTitle, { flex: 1, flexShrink: 1 }]} numberOfLines={2}>
-                    {f.home.name} vs {f.away.name}
-                  </Text>
-                  {f.live ? (
-                    <StatusBadge label="LIVE" tone="danger" />
-                  ) : f.popularMatch ? (
-                    <StatusBadge label="POPULAR" tone="info" />
-                  ) : (
-                    <StatusBadge label="OTHER" tone="warn" />
-                  )}
-                </View>
-                <Text style={common.cardBody}>
-                  {f.live
-                    ? `${f.score?.home ?? '-'} - ${f.score?.away ?? '-'}${f.minute ? ` · ${f.minute}'` : ''}`
-                    : new Date(f.kickoffUtc).toLocaleString()}
-                </Text>
-                <Text style={common.cardBody}>{countryLeague(f)}</Text>
+                <CountryLeagueLine
+                  leagueHeading={f.leagueHeading}
+                  countryFlag={f.countryFlag}
+                  country={f.country}
+                  league={f.league}
+                />
+                {f.live ? (
+                  <LiveScoreboard
+                    home={f.home.name}
+                    away={f.away.name}
+                    score={f.score}
+                    minute={f.minute}
+                  />
+                ) : (
+                  <SplitTeams home={f.home.name} away={f.away.name} />
+                )}
               </Pressable>
             );
           }
           if (item.kind === 'match') {
+            const mk = betMatchKey(item.fixture.home.name, item.fixture.away.name, item.fixture.kickoffUtc);
+            const cached = lookupBetCardAnalysis(item.fixture.id, mk);
             return (
               <BoardMatchCard
                 fixture={item.fixture}
                 pick={item.pick}
                 scoresFirst={item.scoresFirst}
-                onPress={() => navigation.navigate('BetFixture', { id: item.fixture.id })}
+                analysing={picksLoading && !item.pick && !cached}
+                onPress={() => navigation.navigate('BetFixture', { id: item.pick?.fixtureId || item.fixture.id })}
               />
             );
           }
           if (item.kind === 'leg') {
             const leg = item.leg;
+            const score = leg.analysisScore ?? leg.safetyScore;
+            const teams = splitMatch(leg.match, leg.home, leg.away);
             return (
               <Pressable
-                style={common.card}
+                style={betCardStyle}
                 onPress={() => navigation.navigate('BetFixture', { id: leg.fixtureId })}
               >
-                <View style={common.row}>
-                  <Text style={[common.cardTitle, { flex: 1, flexShrink: 1 }]} numberOfLines={2}>
-                    {leg.match}
-                  </Text>
-                  <StatusBadge
-                    label={`${leg.analysisScore ?? leg.safetyScore}/100`}
-                    tone={(leg.analysisScore ?? leg.safetyScore) >= 80 ? 'ok' : 'info'}
-                  />
-                </View>
-                <Text style={[common.metric, { fontSize: 22, marginTop: 4 }]}>
-                  {leg.analysisScore ?? leg.safetyScore}
-                </Text>
-                <Text style={common.cardBody}>Analysis score / 100 · delivery {leg.deliveryRate}%</Text>
-                <Text style={[common.cardBody, { color: colors.text, fontWeight: '700' }]}>
-                  Pick: {leg.label} · analysed {leg.analysedOdds ?? leg.odds.bestOdds ?? 'n/a'}
-                </Text>
-                {leg.reason ? (
-                  <Text style={common.cardBody} numberOfLines={4}>
-                    Why: {leg.reason}
-                  </Text>
-                ) : null}
-                <MatchPackBlock item={leg} />
+                <CountryLeagueLine
+                  leagueHeading={leg.leagueHeading}
+                  countryFlag={leg.countryFlag}
+                  country={leg.country}
+                  league={leg.league}
+                />
+                <SplitTeams home={teams.home} away={teams.away} />
+                <View style={{ height: 8 }} />
+                <MarketLines
+                  lines={leg.cardLines}
+                  score={score}
+                  stake={leg.label}
+                  safestOnly
+                />
               </Pressable>
             );
           }
@@ -588,6 +797,7 @@ export function BetBotHomeScreen({ navigation }: Props) {
             return (
               <PickCard
                 item={item.pick}
+                showMultiscore={tab === 'MULTISCORE'}
                 onPress={() => navigation.navigate('BetFixture', { id: item.pick.fixtureId })}
               />
             );
@@ -595,32 +805,50 @@ export function BetBotHomeScreen({ navigation }: Props) {
           if (item.kind === 'avoid') {
             return (
               <Pressable
-                style={common.card}
+                style={betCardStyle}
                 onPress={() => navigation.navigate('BetFixture', { id: item.fixtureId })}
               >
-                <Text style={common.cardTitle} numberOfLines={2}>
-                  {item.match}
-                </Text>
-                <Text style={common.cardBody}>{item.reasons.join(' · ')}</Text>
+                <CountryLeagueLine
+                  leagueHeading={item.leagueHeading}
+                  countryFlag={item.countryFlag}
+                  country={item.country}
+                  league={item.league}
+                />
+                <SplitTeams {...splitMatch(item.match)} />
+                <View style={{ height: 8 }} />
+                <StatusBadge label="AVOID" tone="danger" />
+                <Text style={[common.cardBody, { marginTop: 12 }]}>{item.reasons.join(' · ')}</Text>
               </Pressable>
             );
           }
           return (
-            <View style={common.card}>
-              <Text style={common.cardTitle}>{item.title}</Text>
-              <Text style={common.cardBody}>{item.row.note}</Text>
-              {item.row.legs.map((leg) => (
-                <Pressable
-                  key={`${leg.fixtureId}-${leg.market}`}
-                  onPress={() => navigation.navigate('BetFixture', { id: leg.fixtureId })}
-                  style={{ marginTop: 8 }}
-                >
-                  <Text style={{ color: colors.text, fontWeight: '700' }}>
-                    {leg.match} — {leg.label}
-                  </Text>
-                  <MatchPackBlock item={leg} />
-                </Pressable>
-              ))}
+            <View style={betCardStyle}>
+              <Text style={[common.cardTitle, { marginBottom: 8 }]}>{item.title}</Text>
+              <Text style={[common.cardBody, { marginBottom: 8 }]}>{item.row.note}</Text>
+              {item.row.legs.map((leg) => {
+                const teams = splitMatch(leg.match, leg.home, leg.away);
+                return (
+                  <Pressable
+                    key={`${leg.fixtureId}-${leg.market}`}
+                    onPress={() => navigation.navigate('BetFixture', { id: leg.fixtureId })}
+                    style={[betCardStyle, { marginTop: 8, marginBottom: 12 }]}
+                  >
+                    <CountryLeagueLine
+                      leagueHeading={leg.leagueHeading}
+                      countryFlag={leg.countryFlag}
+                      country={leg.country}
+                      league={leg.league}
+                    />
+                    <SplitTeams home={teams.home} away={teams.away} />
+                    <View style={{ height: 8 }} />
+                    <MarketLines
+                      lines={leg.cardLines}
+                      score={leg.analysisScore ?? leg.safetyScore}
+                      stake={leg.label}
+                    />
+                  </Pressable>
+                );
+              })}
             </View>
           );
         }}
@@ -638,51 +866,36 @@ const inputStyle = {
   marginBottom: 8,
 };
 
-function PickCard({ item, onPress }: { item: BetPickRow; onPress: () => void }) {
+function PickCard({
+  item,
+  showMultiscore,
+  onPress,
+}: {
+  item: BetPickRow;
+  showMultiscore?: boolean;
+  onPress: () => void;
+}) {
   const score = item.analysisScore ?? item.safetyScore;
-  const delivery = item.sampleDeliveryRate ?? item.deliveryRate ?? item.modelProbability;
+  const teams = splitMatch(item.match, item.home, item.away);
   return (
-    <Pressable style={common.card} onPress={onPress}>
-      <View style={common.row}>
-        <Text style={[common.cardTitle, { flex: 1, flexShrink: 1 }]} numberOfLines={2}>
-          {item.match}
-        </Text>
-        <View style={{ flexDirection: 'row', gap: 6, alignItems: 'center' }}>
-          {score != null ? (
-            <StatusBadge label={`${score}/100`} tone={score >= 80 ? 'ok' : score >= 70 ? 'info' : 'warn'} />
-          ) : (
-            <StatusBadge label={item.riskLevel} tone={item.category === 'SAFEST' ? 'ok' : 'warn'} />
-          )}
-        </View>
-      </View>
-      <Text style={[common.metric, { fontSize: 22, marginTop: 4 }]}>{score != null ? `${score}` : '—'}</Text>
-      <Text style={common.cardBody}>Analysis score · {item.riskLevel}</Text>
-      <Text style={common.cardBody}>{new Date(item.kickoffUtc).toLocaleString()}</Text>
-      <Text style={[common.cardBody, { color: colors.text, fontWeight: '700' }]}>
-        Pick: {item.label} · analysed {item.analysedOdds ?? item.odds.bestOdds ?? 'n/a'} · delivery {delivery}%
-      </Text>
-      {item.multiScore ? (
-        <View style={{ marginTop: 4, marginBottom: 4 }}>
-          <Text style={[common.cardBody, { color: colors.text, fontWeight: '800', fontSize: 16 }]}>
-            {item.multiScore.scores.map((s) => s.line).join('  ·  ')}
-          </Text>
-          <Text style={common.cardBody}>
-            {item.multiScore.side === 'HOME' ? 'Home' : 'Away'} win scores · combined {item.multiScore.combinedProbability}%
-            {item.multiScore.analysedOdds != null ? ` · analysed ${item.multiScore.analysedOdds}` : ''}
-          </Text>
-        </View>
-      ) : null}
-      {item.reason ? (
-        <Text style={common.cardBody} numberOfLines={4}>
-          Why: {item.reason}
-        </Text>
-      ) : null}
-      <MatchPackBlock item={item} />
-      {item.mainRisk ? (
-        <Text style={common.cardBody} numberOfLines={2}>
-          Risk: {item.mainRisk}
-        </Text>
-      ) : null}
+    <Pressable style={betCardStyle} onPress={onPress}>
+      <CountryLeagueLine
+        leagueHeading={item.leagueHeading}
+        countryFlag={item.countryFlag}
+        country={item.country}
+        league={item.league}
+      />
+      <SplitTeams home={teams.home} away={teams.away} />
+      <KickoffDate iso={item.kickoffUtc} />
+      <View style={{ height: 8 }} />
+      <MarketLines
+        lines={item.cardLines}
+        score={score}
+        stake={item.label}
+        showMultiscore={showMultiscore}
+        multiScore={showMultiscore ? item.multiScore : undefined}
+        safestOnly={!showMultiscore}
+      />
     </Pressable>
   );
 }
@@ -690,8 +903,9 @@ function PickCard({ item, onPress }: { item: BetPickRow; onPress: () => void }) 
 function uniqueFixtures(items: BetFixture[]): BetFixture[] {
   const map = new Map<string, BetFixture>();
   for (const f of items) {
-    const prev = map.get(f.id);
-    if (!prev || (f.live && !prev.live)) map.set(f.id, f);
+    const key = matchKey(f.home.name, f.away.name, f.kickoffUtc) || f.id;
+    const prev = map.get(key);
+    if (!prev || (f.live && !prev.live)) map.set(key, f);
   }
   return [...map.values()];
 }
@@ -699,63 +913,48 @@ function uniqueFixtures(items: BetFixture[]): BetFixture[] {
 function BoardMatchCard({
   fixture,
   pick,
-  scoresFirst,
+  analysing,
   onPress,
 }: {
   fixture: BetFixture;
   pick?: BetPickRow;
   scoresFirst?: boolean;
+  analysing?: boolean;
   onPress: () => void;
 }) {
-  const score = pick?.analysisScore ?? pick?.safetyScore;
-  const pack = {
-    home: pick?.home || fixture.home.name,
-    away: pick?.away || fixture.away.name,
-    last5Home: pick?.last5Home,
-    last5Away: pick?.last5Away,
-    scoresHome: pick?.scoresHome,
-    scoresAway: pick?.scoresAway,
-    country: pick?.country || fixture.country,
-    countryFlag: pick?.countryFlag || fixture.countryFlag,
-    league: fixture.league,
-    leagueHeading: pick?.leagueHeading || fixture.leagueHeading,
-  };
+  const mk = betMatchKey(fixture.home.name, fixture.away.name, fixture.kickoffUtc);
+  const cached = lookupBetCardAnalysis(fixture.id, mk);
+  const score = pick?.analysisScore ?? pick?.safetyScore ?? cached?.score;
+  const lines = pick?.cardLines?.length ? pick.cardLines : cached?.cardLines;
+  const stake = pick?.label ?? cached?.label;
+  const hasAnalysis = Boolean(lines?.length || score != null || stake);
   return (
-    <Pressable style={common.card} onPress={onPress}>
-      <View style={common.row}>
-        <Text style={[common.cardTitle, { flex: 1, flexShrink: 1 }]} numberOfLines={2}>
-          {fixture.home.name} vs {fixture.away.name}
-        </Text>
-        <View style={{ flexDirection: 'row', gap: 6, alignItems: 'center' }}>
-          {fixture.live ? (
-            <StatusBadge label="LIVE" tone="danger" />
-          ) : fixture.popularMatch ? (
-            <StatusBadge label="POPULAR" tone="info" />
-          ) : (
-            <StatusBadge label="OTHER" tone="warn" />
-          )}
-        </View>
-      </View>
-      {score != null ? (
-        <>
-          <Text style={[common.metric, { fontSize: 22, marginTop: 4 }]}>{score}</Text>
-          <Text style={common.cardBody}>Analysis score / 100</Text>
-        </>
+    <Pressable style={betCardStyle} onPress={onPress}>
+      <CountryLeagueLine
+        leagueHeading={fixture.leagueHeading}
+        countryFlag={fixture.countryFlag}
+        country={fixture.country}
+        league={fixture.league}
+      />
+      {fixture.live ? (
+        <LiveScoreboard
+          home={fixture.home.name}
+          away={fixture.away.name}
+          score={fixture.score}
+          minute={fixture.minute}
+        />
       ) : (
-        <Text style={common.cardBody}>Analysis loading…</Text>
+        <SplitTeams home={fixture.home.name} away={fixture.away.name} />
       )}
-      <Text style={common.cardBody}>
-        {fixture.live
-          ? `${fixture.score?.home ?? '-'} - ${fixture.score?.away ?? '-'}${fixture.minute ? ` · ${fixture.minute}'` : ''}`
-          : new Date(fixture.kickoffUtc).toLocaleString()}
-      </Text>
-      {scoresFirst ? <MatchPackBlock item={pack} /> : null}
-      {pick ? (
-        <Text style={[common.cardBody, { color: colors.text, fontWeight: '700' }]}>
-          Pick: {pick.label} · analysed {pick.analysedOdds ?? pick.odds.bestOdds ?? 'n/a'}
+      <KickoffDate iso={fixture.kickoffUtc} />
+      <View style={{ height: 8 }} />
+      {hasAnalysis ? (
+        <MarketLines lines={lines} score={score} stake={stake} />
+      ) : (
+        <Text style={common.cardBody}>
+          {analysing ? 'Fetching analysis…' : 'Tap for full analysis'}
         </Text>
-      ) : null}
-      {!scoresFirst ? <MatchPackBlock item={pack} /> : null}
+      )}
     </Pressable>
   );
 }
@@ -772,6 +971,42 @@ function countryLeague(item: {
   return item.league || item.country || '';
 }
 
+const TOP_COUNTRY_ORDER = [
+  'England',
+  'Spain',
+  'Italy',
+  'Germany',
+  'France',
+  'Europe',
+  'Netherlands',
+  'Portugal',
+  'Belgium',
+  'Turkey',
+  'Scotland',
+  'Brazil',
+  'Argentina',
+  'USA',
+  'Mexico',
+  'Saudi Arabia',
+  'Nigeria',
+];
+
+function topCountryRank(country?: string): number {
+  const n = (country || '').trim().toLowerCase();
+  const i = TOP_COUNTRY_ORDER.findIndex((c) => c.toLowerCase() === n);
+  return i >= 0 ? i : 80;
+}
+
+function headingCountry(heading: string): string {
+  const n = heading.toLowerCase();
+  return TOP_COUNTRY_ORDER.find((c) => n.includes(c.toLowerCase())) || heading;
+}
+
+function groupCountryRank<T extends { country?: string }>(heading: string, items: T[]): number {
+  const fromItem = items[0]?.country?.trim();
+  return topCountryRank(fromItem || headingCountry(heading));
+}
+
 function groupByPopularAndLeague<
   T extends {
     popularMatch?: boolean;
@@ -781,6 +1016,7 @@ function groupByPopularAndLeague<
     leagueHeading?: string;
     kickoffUtc?: string;
     live?: boolean;
+    topLeague?: boolean;
     analysisScore?: number;
     safetyScore?: number;
   },
@@ -788,9 +1024,62 @@ function groupByPopularAndLeague<
   items: T[],
   popularOnly: boolean,
   toRow: (item: T, i: number) => ListRow,
-  opts?: { hideDayHeaders?: boolean; scoreOf?: (item: T) => number },
+  opts?: {
+    hideDayHeaders?: boolean;
+    scoreOf?: (item: T) => number;
+    scoreFirst?: boolean;
+    countryFirst?: boolean;
+  },
 ): ListRow[] {
   const scoreOf = (item: T) => opts?.scoreOf?.(item) ?? item.analysisScore ?? item.safetyScore ?? 0;
+  if (opts?.scoreFirst || opts?.countryFirst) {
+    const out: ListRow[] = [];
+    const dayBuckets = new Map<string, T[]>();
+    if (opts.hideDayHeaders) {
+      dayBuckets.set('one', [...items]);
+    } else {
+      const ordered = [...items].sort((a, b) => compareKickoffDay(a.kickoffUtc, b.kickoffUtc));
+      for (const item of ordered) {
+        const key = localDayKey(item.kickoffUtc);
+        const arr = dayBuckets.get(key) ?? [];
+        arr.push(item);
+        dayBuckets.set(key, arr);
+      }
+    }
+    for (const [dayKey, dayItems] of dayBuckets) {
+      if (!opts.hideDayHeaders) {
+        out.push({ key: `day-${dayKey}`, kind: 'section', title: dayTitle(dayKey) });
+      }
+      const list = popularOnly ? dayItems.filter((x) => x.popularMatch) : dayItems;
+      const buckets = new Map<string, T[]>();
+      for (const item of list) {
+        const heading = countryLeague(item) || 'League';
+        const arr = buckets.get(heading) ?? [];
+        arr.push(item);
+        buckets.set(heading, arr);
+      }
+      const headings = [...buckets.keys()].sort((a, b) => {
+        if (opts.countryFirst) {
+          const ra = groupCountryRank(a, buckets.get(a) ?? []);
+          const rb = groupCountryRank(b, buckets.get(b) ?? []);
+          return ra - rb || a.localeCompare(b);
+        }
+        const maxA = Math.max(0, ...(buckets.get(a) ?? []).map(scoreOf));
+        const maxB = Math.max(0, ...(buckets.get(b) ?? []).map(scoreOf));
+        return maxB - maxA || a.localeCompare(b);
+      });
+      for (const heading of headings) {
+        const group = (buckets.get(heading) ?? []).sort((a, b) =>
+          opts.countryFirst
+            ? (a.kickoffUtc || '').localeCompare(b.kickoffUtc || '')
+            : scoreOf(b) - scoreOf(a) || (a.kickoffUtc || '').localeCompare(b.kickoffUtc || ''),
+        );
+        out.push({ key: `lg-score-${dayKey}-${heading}`, kind: 'section', title: heading });
+        group.forEach((item, i) => out.push(toRow(item, i)));
+      }
+    }
+    return out;
+  }
   const sorted = [...items].sort((a, b) => {
     const day = compareKickoffDay(a.kickoffUtc, b.kickoffUtc);
     if (day) return day;
@@ -846,7 +1135,27 @@ function groupByPopularAndLeague<
 function localDayKey(iso?: string | Date): string {
   const d = iso instanceof Date ? iso : iso ? new Date(iso) : new Date();
   if (Number.isNaN(d.getTime())) return '9999-12-31';
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  return footballDateKey(d);
+}
+
+function utcDayKey(iso?: string | Date): string {
+  const d = iso instanceof Date ? iso : iso ? new Date(iso) : new Date();
+  if (Number.isNaN(d.getTime())) return '9999-12-31';
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+}
+
+function isOnCalendarDay(iso?: string, which: 'today' | 'tomorrow' = 'today'): boolean {
+  const target = new Date();
+  if (which === 'tomorrow') target.setDate(target.getDate() + 1);
+  if (!iso) return which === 'today';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return which === 'today';
+  return localDayKey(d) === localDayKey(target) || utcDayKey(d) === utcDayKey(target);
+}
+
+function matchKey(home?: string, away?: string, kickoffUtc?: string): string {
+  const fold = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '');
+  return `${fold(home || '')}|${fold(away || '')}|${(kickoffUtc || '').slice(0, 10)}`;
 }
 
 function tomorrowKey(): string {
@@ -884,38 +1193,4 @@ function formatDayLabel(key: string): string {
   const [y, m, d] = key.split('-').map(Number);
   const date = new Date(y || 2026, (m || 1) - 1, d || 1);
   return date.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
-}
-
-function MatchPackBlock({
-  item,
-}: {
-  item: {
-    home?: string;
-    away?: string;
-    match?: string;
-    last5Home?: string;
-    last5Away?: string;
-    scoresHome?: string;
-    scoresAway?: string;
-    country?: string;
-    countryFlag?: string;
-    league?: string;
-    leagueHeading?: string;
-  };
-}) {
-  const homeName = item.home || item.match?.split(' vs ')[0] || 'Home';
-  const awayName = item.away || item.match?.split(' vs ')[1] || 'Away';
-  return (
-    <View>
-      <Text style={common.cardBody}>{countryLeague(item)}</Text>
-      <Text style={common.cardBody} numberOfLines={5}>
-        {homeName} last 5 {item.last5Home || '—'}
-        {item.scoresHome ? ` · ${item.scoresHome}` : ' · scores loading from feed'}
-      </Text>
-      <Text style={common.cardBody} numberOfLines={5}>
-        {awayName} last 5 {item.last5Away || '—'}
-        {item.scoresAway ? ` · ${item.scoresAway}` : ' · scores loading from feed'}
-      </Text>
-    </View>
-  );
 }

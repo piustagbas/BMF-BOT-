@@ -14,12 +14,24 @@ export interface IUserSettings extends Document {
   killSwitch: boolean;
   emergencyStop: boolean;
   autoTradingEnabled: boolean;
+  autoTradeMemecoins: boolean;
+  autoTradeMemecoinAddresses: string[];
+  autoTradeForex: boolean;
   walletPublicKey: string | null;
   trackedWallets: Array<{ address: string; label: string }>;
   maxSlippageBps: number;
   riskJson: Record<string, unknown>;
   /** Set after one-time migration that turns on env-configured alert channels. */
   alertChannelsHealed: boolean;
+  notifyInApp: boolean;
+  notifyPush: boolean;
+  notifyBuyConfirms: boolean;
+  notifySellConfirms: boolean;
+  notifyTradeFailed: boolean;
+  notifyTakeProfit: boolean;
+  notifyStopLoss: boolean;
+  expoPushToken: string | null;
+  walletProvider: 'phantom' | 'solflare' | 'manual' | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -44,6 +56,9 @@ const UserSettingsSchema = new Schema<IUserSettings>(
     killSwitch: { type: Boolean, default: true },
     emergencyStop: { type: Boolean, default: false },
     autoTradingEnabled: { type: Boolean, default: false },
+    autoTradeMemecoins: { type: Boolean, default: false },
+    autoTradeMemecoinAddresses: { type: [String], default: [] },
+    autoTradeForex: { type: Boolean, default: false },
     walletPublicKey: { type: String, default: null },
     trackedWallets: {
       type: [
@@ -57,6 +72,15 @@ const UserSettingsSchema = new Schema<IUserSettings>(
     maxSlippageBps: { type: Number, default: 300 },
     riskJson: { type: Schema.Types.Mixed, default: {} },
     alertChannelsHealed: { type: Boolean, default: false },
+    notifyInApp: { type: Boolean, default: true },
+    notifyPush: { type: Boolean, default: true },
+    notifyBuyConfirms: { type: Boolean, default: true },
+    notifySellConfirms: { type: Boolean, default: true },
+    notifyTradeFailed: { type: Boolean, default: true },
+    notifyTakeProfit: { type: Boolean, default: true },
+    notifyStopLoss: { type: Boolean, default: true },
+    expoPushToken: { type: String, default: null },
+    walletProvider: { type: String, default: null },
   },
   { timestamps: true },
 );

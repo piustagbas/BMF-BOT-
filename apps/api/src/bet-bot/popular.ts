@@ -21,9 +21,14 @@ export const POPULAR_TEAM_NAMES = [
   'paris saint germain',
   'psg',
   'ajax',
+  'psv',
+  'feyenoord',
   'benfica',
   'porto',
   'sporting',
+  'galatasaray',
+  'fenerbahce',
+  'besiktas',
   'celtic',
   'rangers',
   'aston villa',
@@ -100,18 +105,101 @@ export const RELIABLE_LEAGUE_NEEDLES = [
   'coppa italia',
   'dfb pokal',
   'coupe de france',
+  'eredivisie',
+  'primeira liga',
+  'liga portugal',
+  'liga nos',
+  'super lig',
+  'superlig',
 ];
 
 export function isReliableLeague(league: string): boolean {
-  const n = league.trim().toLowerCase();
-  if (/2\.?\s*bundesliga|bundesliga\s*2\b|serie b\b|ligue 2\b|championship|\bliga\s*2\b/.test(n)) {
+  const n = foldName(league);
+  if (/2 bundesliga|bundesliga 2\b|serie b\b|ligue 2\b|championship|\bliga 2\b/.test(n)) {
     return false;
   }
-  return RELIABLE_LEAGUE_NEEDLES.some((p) => n.includes(p));
+  return RELIABLE_LEAGUE_NEEDLES.some((p) => n.includes(foldName(p)));
+}
+
+/** Countries whose top division should lead the Today board. */
+export const TOP_COUNTRIES = [
+  'England',
+  'Spain',
+  'Italy',
+  'Germany',
+  'France',
+  'Europe',
+  'Netherlands',
+  'Portugal',
+  'Belgium',
+  'Turkey',
+  'Scotland',
+  'Brazil',
+  'Argentina',
+  'USA',
+  'Mexico',
+  'Saudi Arabia',
+  'Nigeria',
+] as const;
+
+const TOP_DIVISION: Record<string, RegExp> = {
+  england: /\bpremier league\b|\bepl\b/i,
+  spain: /la liga|spanish primera/i,
+  italy: /\bserie a\b/i,
+  germany: /bundesliga/i,
+  france: /ligue 1/i,
+  netherlands: /eredivisie/i,
+  portugal: /primeira liga|liga portugal(?!\s*2)|liga nos|liga bwin|liga betclic/i,
+  belgium: /jupiler|belgian pro/i,
+  turkey: /super lig|superlig|trendyol super/i,
+  scotland: /scottish premiership|cinch premiership/i,
+  brazil: /brasileirao|campeonato brasileiro|serie a brazil|\bserie a\b/i,
+  argentina: /liga profesional|copa de la liga/i,
+  usa: /\bmls\b|major league soccer/i,
+  mexico: /liga mx/i,
+  'saudi arabia': /saudi pro|saudi professional|roshn/i,
+  nigeria: /npfl|nigerian professional|nigerian?\s*premier/i,
+  europe: /champions league|europa league|conference league/i,
+};
+
+export function topCountryRank(country?: string): number {
+  const n = (country || '').trim().toLowerCase();
+  const i = TOP_COUNTRIES.findIndex((c) => c.toLowerCase() === n);
+  return i >= 0 ? i : 80;
+}
+
+/** Top-flight league in a widely followed country — not Championship / Serie B / Ligue 2. */
+export function isTopLeague(league: string, country?: string): boolean {
+  const n = league.trim();
+  if (!n) return false;
+  const folded = foldName(n);
+  if (/esport|e-?sport|virtual|u-?19|u-?21|youth|women|femenil|feminin|reserva|\bii\b/i.test(n)) {
+    return false;
+  }
+  if (
+    /2\.?\s*bundesliga|bundesliga\s*2|serie b\b|ligue 2\b|championship|segunda|league one|league two|efl cup|eerste divisie|liga portugal 2|tff 1\.?\s*lig/i.test(
+      n,
+    ) ||
+    /eerste divisie|liga portugal 2|tff 1 lig/.test(folded)
+  ) {
+    return false;
+  }
+  if (
+    /champions league|europa league|conference league/i.test(n) ||
+    /champions league|europa league|conference league/.test(folded)
+  ) {
+    return true;
+  }
+  const c = (country || leagueCountry(n)).toLowerCase();
+  const re = TOP_DIVISION[c];
+  return Boolean(re && (re.test(n) || re.test(folded)));
 }
 
 export function leagueFamily(league: string): string {
-  const n = league.trim().toLowerCase();
+  const n = foldName(league);
+  if (n.includes('eredivisie')) return 'eredivisie';
+  if (n.includes('primeira') || n.includes('liga portugal') || n.includes('liga nos')) return 'portugal';
+  if (n.includes('super lig') || n.includes('superlig')) return 'superlig';
   if (n.includes('premier')) return 'epl';
   if (n.includes('la liga') || n.includes('primera')) return 'laliga';
   if (n.includes('serie a')) return 'seriea';
@@ -120,7 +208,7 @@ export function leagueFamily(league: string): string {
   if (n.includes('champions')) return 'ucl';
   if (n.includes('conference')) return 'uecl';
   if (n.includes('europa')) return 'uel';
-  return n;
+  return n || league.trim().toLowerCase();
 }
 
 const LEAGUE_COUNTRY_RULES: Array<[RegExp, string]> = [
@@ -155,14 +243,25 @@ const LEAGUE_COUNTRY_RULES: Array<[RegExp, string]> = [
   [/uae pro|arabian gulf league|adnoc pro/i, 'UAE'],
   [/qatar stars/i, 'Qatar'],
   [/indian super league|\bisl\b/i, 'India'],
-  [/a-league|a league|australia/i, 'Australia'],
+  [/a-league|australia/i, 'Australia'],
   [/persian gulf pro|iran/i, 'Iran'],
   [/thai league|thailand/i, 'Thailand'],
-  [/eredivisie|knvb|eerste divisie|netherlands/i, 'Netherlands'],
-  [/primeira liga|liga portugal|taca de portugal|portugal/i, 'Portugal'],
+  [/eredivisie|knvb|eerste divisie|netherlands|holland/i, 'Netherlands'],
+  [/primeira liga|liga portugal|liga nos|liga bwin|liga betclic|taca de portugal|portugal/i, 'Portugal'],
   [/jupiler|belgian pro/i, 'Belgium'],
-  [/super lig|superlig|turkiye|turkish cup/i, 'Turkey'],
-  [/super league greece|greek cup/i, 'Greece'],
+  [/super lig|superlig|trendyol|turkiye|turkish cup|turkey/i, 'Turkey'],
+  [/champions league|europa league|conference league|nations league|uefa/i, 'Europe'],
+  [/super league 1|super league greece|greek cup/i, 'Greece'],
+  [/1\. liga|czech first league/i, 'Czech Republic'],
+  [/first division a/i, 'Belgium'],
+  [/professional football league|npfl/i, 'Nigeria'],
+  [/premier soccer league|dstv premiership/i, 'South Africa'],
+  [/botola pro|botola/i, 'Morocco'],
+  [/primera a|liga betplay/i, 'Colombia'],
+  [/liga de primera/i, 'Chile'],
+  [/v-league/i, 'Vietnam'],
+  [/indian super league/i, 'India'],
+  [/indonesia super league|liga 1 indonesia/i, 'Indonesia'],
   [/russian premier|\brpl\b/i, 'Russia'],
   [/ukrainian premier|\bupl\b/i, 'Ukraine'],
   [/ekstraklasa|poland/i, 'Poland'],
@@ -184,7 +283,6 @@ const LEAGUE_COUNTRY_RULES: Array<[RegExp, string]> = [
   [/bundesliga|dfb pokal|3\.?\s*liga/i, 'Germany'],
   [/ligue 1|ligue 2|coupe de france|coupe de la ligue/i, 'France'],
   [/english premier|\bepl\b|fa cup|\befl\b|carabao|efl championship|sky bet championship|english championship|^premier league$|\befl league one\b|\befl league two\b|vanarama/i, 'England'],
-  [/champions league|europa league|conference league|nations league|uefa/i, 'Europe'],
   [/caf champions|caf confederation|africa cup|afcon/i, 'Africa'],
   [/copa libertadores|copa sudamericana|conmebol/i, 'South America'],
   [/concacaf|gold cup/i, 'North America'],
@@ -331,6 +429,69 @@ const COUNTRY_ISO: Record<string, string> = {
   europe: 'EU',
 };
 
+const CCODE_COUNTRY: Record<string, string> = {
+  alb: 'Albania',
+  alg: 'Algeria',
+  arg: 'Argentina',
+  arm: 'Armenia',
+  aus: 'Australia',
+  aut: 'Austria',
+  bel: 'Belgium',
+  bra: 'Brazil',
+  bul: 'Bulgaria',
+  chi: 'Chile',
+  chn: 'China',
+  col: 'Colombia',
+  cro: 'Croatia',
+  cze: 'Czech Republic',
+  den: 'Denmark',
+  egy: 'Egypt',
+  eng: 'England',
+  esp: 'Spain',
+  fin: 'Finland',
+  fra: 'France',
+  ger: 'Germany',
+  gha: 'Ghana',
+  gre: 'Greece',
+  hun: 'Hungary',
+  ind: 'India',
+  idn: 'Indonesia',
+  int: 'International',
+  irl: 'Ireland',
+  isr: 'Israel',
+  ita: 'Italy',
+  jpn: 'Japan',
+  mas: 'Malaysia',
+  mex: 'Mexico',
+  mar: 'Morocco',
+  nga: 'Nigeria',
+  nir: 'Northern Ireland',
+  nor: 'Norway',
+  nld: 'Netherlands',
+  ned: 'Netherlands',
+  per: 'Peru',
+  pol: 'Poland',
+  por: 'Portugal',
+  prt: 'Portugal',
+  qat: 'Qatar',
+  rou: 'Romania',
+  rus: 'Russia',
+  ksa: 'Saudi Arabia',
+  sco: 'Scotland',
+  srb: 'Serbia',
+  sin: 'Singapore',
+  rsa: 'South Africa',
+  swe: 'Sweden',
+  sui: 'Switzerland',
+  tha: 'Thailand',
+  tur: 'Turkey',
+  ukr: 'Ukraine',
+  uae: 'UAE',
+  usa: 'USA',
+  vie: 'Vietnam',
+  wal: 'Wales',
+};
+
 const SPECIAL_FLAGS: Record<string, string> = {
   england: '🏴󠁧󠁢󠁥󠁮󠁧󠁿',
   scotland: '🏴󠁧󠁢󠁳󠁣󠁴󠁿',
@@ -356,13 +517,22 @@ function isoToFlag(iso: string): string {
 export function normalizeCountryName(raw: string): string {
   const n = foldName(raw);
   if (!n) return '';
+  const fromCcode = CCODE_COUNTRY[n];
+  if (fromCcode) return fromCcode;
   if (/^(uk|united kingdom|great britain|britain)$/.test(n)) return 'England';
   if (/^(usa|united states|united states of america|us)$/.test(n)) return 'USA';
   if (/^(uae|united arab emirates)$/.test(n)) return 'UAE';
   if (/^(ivory coast|cote d ivoire)$/.test(n)) return 'Ivory Coast';
   if (/^(czech republic|czechia)$/.test(n)) return 'Czech Republic';
   if (/^(south korea|korea republic|korea)$/.test(n)) return 'South Korea';
-  if (/^(the netherlands|holland)$/.test(n)) return 'Netherlands';
+  if (/^(the netherlands|holland|ned|nld)$/.test(n)) return 'Netherlands';
+  if (/^(por|prt)$/.test(n)) return 'Portugal';
+  if (/^(tur|turkiye)$/.test(n)) return 'Turkey';
+  if (/^(ger|deu)$/.test(n)) return 'Germany';
+  if (/^(eng)$/.test(n)) return 'England';
+  if (/^(esp)$/.test(n)) return 'Spain';
+  if (/^(ita)$/.test(n)) return 'Italy';
+  if (/^(fra)$/.test(n)) return 'France';
   if (/^(rep of ireland|republic of ireland)$/.test(n)) return 'Ireland';
   return raw.trim();
 }
@@ -375,15 +545,26 @@ export function countryFlag(country: string): string {
   return iso ? isoToFlag(iso) : '';
 }
 
+function isVagueCountryName(country: string): boolean {
+  const n = foldName(country);
+  return /^(world|international|europe|global|int|africa|asia|south america|north america)$/.test(n);
+}
+
 export function leagueCountry(league: string, feedCountry?: string): string {
   const feed = feedCountry?.trim();
-  if (feed && !/^(world|international|europe|global|international football)$/i.test(feed)) {
-    return normalizeCountryName(feed);
+  if (feed) {
+    const fromFeed = normalizeCountryName(feed);
+    if (fromFeed && !isVagueCountryName(fromFeed)) return fromFeed;
   }
+  const folded = foldName(league);
   for (const [re, country] of LEAGUE_COUNTRY_RULES) {
-    if (re.test(league)) return country;
+    if (re.test(league) || re.test(folded)) return country;
   }
-  return feed ? normalizeCountryName(feed) : 'International';
+  if (feed) {
+    const fromFeed = normalizeCountryName(feed);
+    if (fromFeed) return fromFeed;
+  }
+  return 'International';
 }
 
 export function leagueHeading(league: string, country?: string): string {
@@ -405,6 +586,26 @@ export function localDayKey(isoOrDate: string | Date = new Date()): string {
   const d = typeof isoOrDate === 'string' ? new Date(isoOrDate) : isoOrDate;
   if (Number.isNaN(d.getTime())) return '9999-12-31';
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+export function utcDayKey(isoOrDate: string | Date = new Date()): string {
+  const d = typeof isoOrDate === 'string' ? new Date(isoOrDate) : isoOrDate;
+  if (Number.isNaN(d.getTime())) return '9999-12-31';
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+}
+
+/** True when kickoff falls on "today" in local time or UTC (covers TZ splits near midnight). */
+export function isOnCalendarDay(
+  kickoffUtc: string | Date | undefined,
+  now = new Date(),
+  which: 'today' | 'tomorrow' = 'today',
+): boolean {
+  const target = new Date(now.getTime());
+  if (which === 'tomorrow') target.setDate(target.getDate() + 1);
+  if (kickoffUtc == null || kickoffUtc === '') return which === 'today';
+  const d = typeof kickoffUtc === 'string' ? new Date(kickoffUtc) : kickoffUtc;
+  if (Number.isNaN(d.getTime())) return which === 'today';
+  return localDayKey(d) === localDayKey(target) || utcDayKey(d) === utcDayKey(target);
 }
 
 export function matchDayRank(kickoffUtc: string, now = new Date()): number {

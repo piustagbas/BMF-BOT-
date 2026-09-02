@@ -10,12 +10,16 @@ import {
 } from 'react-native';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { fetchTokens, type ScannerToken } from '../api/client';
+import {
+  fetchTokens,
+  type ScannerToken,
+} from '../api/client';
 import { StatusBadge } from '../components/StatusBadge';
 import { TokenRow } from '../components/TokenRow';
 import { buildTokenSourceTags } from '../utils/sourceTags';
 import { colors, common, spacing } from '../theme';
 import type { RootStackParamList } from '../navigation/types';
+import { useMemecoinAutoTrade } from '../settings/MemecoinAutoTradeContext';
 
 type SortKey = 'volume' | 'liquidity' | 'marketCap' | 'priceChange' | 'safety';
 
@@ -23,19 +27,22 @@ export function ScannerScreen() {
   const navigation =
     useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const [items, setItems] = useState<ScannerToken[]>([]);
-  const [sort, setSort] = useState<SortKey>('volume');
+  const [limit, setLimit] = useState(12);
+  const [sort, setSort] = useState<SortKey>('safety');
   const [query, setQuery] = useState('');
   const [note, setNote] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const { addresses: autoTradeAddresses, toggle: toggleAutoTrade } =
+    useMemecoinAutoTrade();
 
-  const load = useCallback(async (nextSort = sort, nextQuery = query) => {
+  const load = useCallback(async (nextSort = sort, nextQuery = query, nextLimit = limit) => {
     setLoading(true);
     setError(null);
     try {
       const res = await fetchTokens({
         sort: nextSort,
-        limit: 10,
+        limit: nextLimit,
         q: nextQuery.trim() || undefined,
       });
       setItems(res.items);
@@ -46,7 +53,7 @@ export function ScannerScreen() {
     } finally {
       setLoading(false);
     }
-  }, [query, sort]);
+  }, [limit, query, sort]);
 
   useFocusEffect(
     useCallback(() => {
@@ -70,8 +77,9 @@ export function ScannerScreen() {
     <View style={common.screen}>
       <Text style={common.title}>Live Scanner</Text>
       <Text style={common.subtitle}>
-        Coins 1–10 days old from DexScreener, GeckoTerminal, and Jupiter. Tap a token for the
-        full why-not-buy panel.
+        Coins from 1 minute to 30 days old. Safety first — honeypot / mint-risk coins are ranked last.
+        Tap a token for the full why-not-buy panel. Turn auto-trade on individual cards to fill
+        only that coin when its BUY passes (same bar as Telegram).
       </Text>
 
       <TextInput
@@ -130,6 +138,22 @@ export function ScannerScreen() {
         >
           <Text style={{ color: colors.info, fontSize: 12 }}>Refresh</Text>
         </Pressable>
+        <Pressable
+          onPress={() => {
+            setLimit(30);
+            void load(sort, query, 30);
+          }}
+          style={{
+            paddingHorizontal: 10,
+            paddingVertical: 6,
+            borderRadius: 8,
+            backgroundColor: colors.accent + '22',
+            borderWidth: 1,
+            borderColor: colors.accent,
+          }}
+        >
+          <Text style={{ color: colors.accent, fontSize: 12 }}>Fetch more coins</Text>
+        </Pressable>
       </View>
 
       {error ? (
@@ -182,6 +206,10 @@ export function ScannerScreen() {
               onPress={() =>
                 navigation.navigate('TokenDetails', { address: item.address })
               }
+              autoTrade={autoTradeAddresses.includes(item.address)}
+              onToggleAuto={(v) => {
+                void toggleAutoTrade(item.address, v).catch(() => undefined);
+              }}
             />
           )}
         />

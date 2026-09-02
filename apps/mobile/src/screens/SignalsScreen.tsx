@@ -4,6 +4,7 @@ import {
   FlatList,
   Pressable,
   RefreshControl,
+  Switch,
   Text,
   View,
 } from 'react-native';
@@ -13,12 +14,14 @@ import { fetchSignals, type SignalItem } from '../api/client';
 import { StatusBadge } from '../components/StatusBadge';
 import { BuyWindowTimer } from '../components/BuyWindowTimer';
 import { DexScreenerBuyButton } from '../components/DexScreenerBuyButton';
+import { hardTestsPassed } from '../components/WhyNotBuyPanel';
 import { TokenLogo } from '../components/TokenLogo';
 import { CopyableAddress } from '../components/CopyableAddress';
 import { formatPairAgeHours } from '@memecoinbot/shared';
 import { buildTokenSourceTags } from '../utils/sourceTags';
 import { colors, common, spacing } from '../theme';
 import type { RootStackParamList } from '../navigation/types';
+import { useMemecoinAutoTrade } from '../settings/MemecoinAutoTradeContext';
 
 type FilterKey = 'BUY' | 'WATCH' | 'SETUP_FORMING' | 'NO_TRADE' | 'ALL';
 
@@ -44,14 +47,16 @@ export function SignalsScreen() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [mode, setMode] = useState('recent');
-  /** Default BUY — only setups that passed buy gates */
-  const [filter, setFilter] = useState<FilterKey>('BUY');
+  /** Show all returned signals by default; users can narrow to BUY/WATCH/etc. */
+  const [filter, setFilter] = useState<FilterKey>('ALL');
+  const { addresses: autoTradeAddresses, toggle: toggleAutoTrade } =
+    useMemecoinAutoTrade();
 
   const load = useCallback(async (scan = false) => {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetchSignals({ limit: scan ? 6 : 30, scan });
+      const res = await fetchSignals({ limit: scan ? 20 : 50, scan });
       setItems(res.items);
       setMode(res.mode);
     } catch (e) {
@@ -170,7 +175,11 @@ export function SignalsScreen() {
               </Text>
             ) : null
           }
-          renderItem={({ item }) => (
+          renderItem={({ item }) => {
+            const testsPassed = item.whyNotBuy
+              ? hardTestsPassed(item.whyNotBuy)
+              : false;
+            return (
             <View style={common.card}>
               <Pressable
                 onPress={() =>
@@ -193,7 +202,10 @@ export function SignalsScreen() {
                       ) : null}
                     </View>
                   </View>
-                  <StatusBadge label={item.signalType} tone={toneForSignal(item.signalType)} />
+                  <StatusBadge
+                    label={testsPassed ? item.signalType : item.signalType === 'BUY' ? 'BUY BLOCKED' : item.signalType}
+                    tone={toneForSignal(testsPassed ? item.signalType : item.signalType === 'BUY' ? 'NO_TRADE' : item.signalType)}
+                  />
                 </View>
                 <Text style={common.cardBody}>
                   Safety {Math.round(item.safetyScore)} · Buy{' '}
@@ -230,6 +242,7 @@ export function SignalsScreen() {
                         <BuyWindowTimer
                           chart={item.chart}
                           signalType={item.signalType}
+                          testsPassed={testsPassed}
                           compact
                         />
                       ) : null}
@@ -250,7 +263,17 @@ export function SignalsScreen() {
                 ) : null}
               </Pressable>
               <CopyableAddress address={item.token.address} compact />
-              {item.signalType === 'BUY' ? (
+              <View style={[common.row, { marginTop: 10 }]}>
+                <Text style={[common.cardBody, { flex: 1 }]}>Auto-trade this coin when BUY passes</Text>
+                <Switch
+                  value={autoTradeAddresses.includes(item.token.address)}
+                  onValueChange={(v) => {
+                    void toggleAutoTrade(item.token.address, v).catch(() => undefined);
+                  }}
+                  trackColor={{ false: colors.border, true: colors.accent }}
+                />
+              </View>
+              {testsPassed ? (
                 <View style={{ marginTop: 10 }}>
                   <DexScreenerBuyButton
                     mint={item.token.address}
@@ -258,9 +281,14 @@ export function SignalsScreen() {
                     compact
                   />
                 </View>
-              ) : null}
+              ) : (
+                <Text style={[common.cardBody, { marginTop: 8, color: colors.muted, fontSize: 11 }]}>
+                  Tap card for full details. BUY stays locked until every hard test passes.
+                </Text>
+              )}
             </View>
-          )}
+            );
+          }}
         />
       )}
     </View>

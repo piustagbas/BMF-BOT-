@@ -79,7 +79,13 @@ export type WhyNotBuyPanel = {
   available: number;
   summary: string;
   items: WhyNotBuyItem[];
+  /** Hard gates all passed. Independent DISAGREE votes do not block if enough others agree. */
+  testsPassed: boolean;
 };
+
+export function testsPassedFromItems(items: WhyNotBuyItem[], canBuy: boolean): boolean {
+  return canBuy && items.every((i) => !i.blocking || i.passed);
+}
 
 function clamp(n: number): number {
   return Math.max(0, Math.min(100, Math.round(n * 10) / 10));
@@ -607,15 +613,16 @@ export function buildWhyNotBuyPanel(params: {
   }
 
   const failed = items.filter((i) => i.blocking && !i.passed);
-  const summary = params.canBuy
-    ? 'Hard gates passed and enough independent signals agreed. Still a potential setup only — never guaranteed.'
+  const testsPassed = testsPassedFromItems(items, params.canBuy);
+  const summary = testsPassed
+    ? 'Hard tests passed and enough independent signals agreed. Still a potential setup only — never guaranteed.'
     : failed.length
-      ? `Rejected because: ${failed.map((f) => f.label).join('; ')}.`
-      : 'Rejected — filters not met.';
+      ? `DO NOT BUY — tests failed: ${failed.map((f) => f.label).join('; ')}. Buying here is how you chase a loss.`
+      : 'DO NOT BUY — filters not met.';
 
   return {
-    title: params.canBuy ? 'Why This Passed' : 'Why Not Buy',
-    decision: params.signalType,
+    title: testsPassed ? 'Why This Passed' : 'Why Not Buy',
+    decision: testsPassed ? params.signalType : params.signalType === 'BUY' ? 'NO_TRADE' : params.signalType,
     buyScore: params.buyScore,
     safetyScore: params.safetyScore,
     agreeing,
@@ -623,6 +630,7 @@ export function buildWhyNotBuyPanel(params: {
     available: available.length,
     summary,
     items,
+    testsPassed,
   };
 }
 
@@ -720,10 +728,12 @@ export function evaluateMasterStrategy(
     independentRequired: required,
   });
 
+  const extrasBlock = extraFailed.length > 0;
+  const canBuy = gates.canBuy && !extrasBlock && !input.criticalWarning;
   let signalType = gates.signalType;
   if (input.criticalWarning) {
     signalType = SignalType.NO_TRADE;
-  } else if (!gates.canBuy) {
+  } else if (!canBuy) {
     signalType = pickSignalType({
       canBuy: false,
       signalScore: buyScore,
@@ -738,7 +748,7 @@ export function evaluateMasterStrategy(
   ];
 
   const whyNotBuy = buildWhyNotBuyPanel({
-    canBuy: gates.canBuy,
+    canBuy,
     signalType,
     safetyScore: input.safetyScore,
     buyScore,
@@ -765,7 +775,7 @@ export function evaluateMasterStrategy(
     independent,
     agreeing,
     required,
-    canBuy: gates.canBuy,
+    canBuy,
     signalType,
     failedChecks,
     whyNotBuy,

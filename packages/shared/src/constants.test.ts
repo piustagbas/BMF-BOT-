@@ -32,16 +32,16 @@ describe('defaults', () => {
     expect(DEFAULT_RISK.minRiskReward).toBe(2);
   });
 
-  it('keeps new-coin window at 1–10 days', () => {
+  it('keeps new-coin window at 1 minute to 30 days', () => {
     expect(isNewCoinAge(0)).toBe(false);
-    expect(isNewCoinAge(12)).toBe(false);
-    expect(isNewCoinAge(23.9)).toBe(false);
+    expect(isNewCoinAge(1 / 60)).toBe(true);
+    expect(isNewCoinAge(12)).toBe(true);
     expect(isNewCoinAge(24)).toBe(true);
-    expect(isNewCoinAge(72)).toBe(true);
-    expect(isNewCoinAge(168)).toBe(true);
-    expect(isNewCoinAge(240)).toBe(true);
-    expect(isNewCoinAge(241)).toBe(false);
+    expect(isNewCoinAge(24 * 30)).toBe(true);
+    expect(isNewCoinAge(24 * 30 + 1)).toBe(false);
     expect(isNewCoinAge(null)).toBe(false);
+    expect(formatPairAgeHours(1 / 60)).toBe('1m old');
+    expect(formatPairAgeHours(0.5)).toBe('30m old');
     expect(formatPairAgeHours(36)).toBe('1.5d old');
   });
 

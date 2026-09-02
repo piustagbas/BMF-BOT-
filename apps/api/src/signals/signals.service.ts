@@ -155,6 +155,7 @@ export class SignalsService implements OnModuleInit, OnModuleDestroy {
   private scanTimer: ReturnType<typeof setInterval> | null = null;
   private firstScanTimer: ReturnType<typeof setTimeout> | null = null;
   private scanRunning = false;
+  private readonly passedBuyListeners: Array<(signal: GeneratedSignal) => void> = [];
 
   constructor(
     private readonly safetyService: SafetyService,
@@ -177,6 +178,31 @@ export class SignalsService implements OnModuleInit, OnModuleDestroy {
 
   listRecent(limit = 20): GeneratedSignal[] {
     return this.recent.slice(0, Math.min(Math.max(limit, 1), 50));
+  }
+
+  /** Subscribe to BUY setups that passed every hard test (same moment Telegram fires). */
+  onPassedBuy(fn: (signal: GeneratedSignal) => void) {
+    this.passedBuyListeners.push(fn);
+  }
+
+  latestPassedBuy(address: string, maxAgeMs = 8 * 60 * 1000): GeneratedSignal | null {
+    const hit = this.recent.find((s) => s.token.address === address);
+    if (!hit) return null;
+    if (hit.signalType !== SignalType.BUY || !hit.whyNotBuy.testsPassed) return null;
+    if (Date.now() - new Date(hit.generatedAt).getTime() > maxAgeMs) return null;
+    return hit;
+  }
+
+  private emitPassedBuy(signal: GeneratedSignal) {
+    for (const fn of this.passedBuyListeners) {
+      try {
+        fn(signal);
+      } catch (err) {
+        this.logger.warn(
+          `Passed-BUY listener failed: ${err instanceof Error ? err.message : 'error'}`,
+        );
+      }
+    }
   }
 
   private async fetchMarket(
@@ -558,7 +584,7 @@ export class SignalsService implements OnModuleInit, OnModuleDestroy {
     this.recordBuySetup(signal);
     await this.persistBestEffort(signal);
 
-    if (signal.signalType === SignalType.BUY) {
+    if (signal.signalType === SignalType.BUY && signal.whyNotBuy.testsPassed) {
       try {
         await this.notifications.notifyBuySetup({
           symbol: signal.token.symbol,
@@ -583,6 +609,7 @@ export class SignalsService implements OnModuleInit, OnModuleDestroy {
           }`,
         );
       }
+      this.emitPassedBuy(signal);
     }
 
     return signal;
@@ -651,7 +678,7 @@ export class SignalsService implements OnModuleInit, OnModuleDestroy {
         );
       }
     }
-    return out;
+    return out.sort((a, b) => (b.safetyScore ?? 0) - (a.safetyScore ?? 0));
   }
 
   /** Periodic scan so BUY setups alert Gmail/Telegram without opening the token. */

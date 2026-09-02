@@ -9,25 +9,31 @@ import { connectDB, disconnectDB, isDbConnected } from '@memecoinbot/db';
 @Injectable()
 export class PrismaService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(PrismaService.name);
+  private reconnectTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(private readonly config: ConfigService) {}
 
   async onModuleInit() {
-    const uri = this.config.get<string>('MONGODB_URI');
-    const ok = await connectDB(uri);
-    if (ok) {
-      this.logger.log('MongoDB connected');
-    } else {
-      this.logger.warn(
-        'MongoDB unavailable — auth/watchlist persistence offline; live market APIs still work',
-      );
-    }
+    await this.tryConnect();
+    this.reconnectTimer = setInterval(() => {
+      if (!isDbConnected()) {
+        void this.tryConnect();
+      }
+    }, 20_000);
   }
 
   async tryConnect(): Promise<boolean> {
     if (isDbConnected()) return true;
     const uri = this.config.get<string>('MONGODB_URI');
-    return connectDB(uri);
+    const ok = await connectDB(uri, { retries: 3 });
+    if (ok) {
+      this.logger.log('MongoDB connected');
+    } else {
+      this.logger.warn(
+        'MongoDB unavailable — auth/watchlist/notifications offline; live market APIs still work',
+      );
+    }
+    return ok;
   }
 
   isConnected(): boolean {
@@ -35,6 +41,7 @@ export class PrismaService implements OnModuleInit, OnModuleDestroy {
   }
 
   async onModuleDestroy() {
+    if (this.reconnectTimer) clearInterval(this.reconnectTimer);
     await disconnectDB();
   }
 }

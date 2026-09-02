@@ -1,40 +1,63 @@
-import React, { useCallback, useMemo, useState } from 'react';
-import { ActivityIndicator, Pressable, RefreshControl, ScrollView, Text, View } from 'react-native';
-import { useFocusEffect } from '@react-navigation/native';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { ActivityIndicator, Linking, Pressable, RefreshControl, ScrollView, Text, View } from 'react-native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { fetchBetFixture, type BetFixtureAnalysis, type BetMarketRow } from '../../api/client';
+import { lookupBetFixtureDetail, rememberBetFixtureAnalysis } from '../../bet/betAnalysisCache';
 import { useBetSlip } from '../../bet/BetSlipContext';
 import { StatusBadge } from '../../components/StatusBadge';
 import { colors, common, spacing } from '../../theme';
 import type { BetBotStackParamList } from '../../navigation/types';
+import { LiveScoreboard } from './LiveScoreboard';
+import { MarketLines } from './BetCardLayout';
 
 type Props = NativeStackScreenProps<BetBotStackParamList, 'BetFixture'>;
 
 export function BetFixtureScreen({ route, navigation }: Props) {
   const { id } = route.params;
   const slip = useBetSlip();
-  const [data, setData] = useState<BetFixtureAnalysis | null>(null);
+  const [data, setData] = useState<BetFixtureAnalysis | null>(() => lookupBetFixtureDetail(id) ?? null);
   const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(() => !lookupBetFixtureDetail(id));
+  const [aiLoading, setAiLoading] = useState(false);
   const [showAvoid, setShowAvoid] = useState(false);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      setData(await fetchBetFixture(id));
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to analyze fixture');
-    } finally {
-      setLoading(false);
-    }
-  }, [id]);
-
-  useFocusEffect(
-    useCallback(() => {
-      void load();
-    }, [load]),
+  const load = useCallback(
+    async (opts?: { background?: boolean }) => {
+      const background = opts?.background === true;
+      if (!background && !lookupBetFixtureDetail(id)) setLoading(true);
+      setError(null);
+      try {
+        const fast = await fetchBetFixture(id, { llm: false });
+        rememberBetFixtureAnalysis(fast);
+        setData(fast);
+        setLoading(false);
+        if (!fast.ai?.source || fast.ai.source === 'local') {
+          setAiLoading(true);
+          try {
+            const enriched = await fetchBetFixture(id, { llm: true });
+            rememberBetFixtureAnalysis(enriched);
+            setData(enriched);
+          } catch {
+            /* keep stats pick */
+          } finally {
+            setAiLoading(false);
+          }
+        }
+      } catch (e) {
+        setError((prev) => prev ?? (e instanceof Error ? e.message : 'Failed to analyze fixture'));
+        setLoading(false);
+      }
+    },
+    [id],
   );
+
+  useEffect(() => {
+    const cached = lookupBetFixtureDetail(id);
+    setData(cached ?? null);
+    setError(null);
+    setLoading(!cached);
+    void load({ background: Boolean(cached) });
+  }, [id, load]);
 
   const addMarket = (m: BetMarketRow) => {
     if (!data) return;
@@ -49,16 +72,36 @@ export function BetFixtureScreen({ route, navigation }: Props) {
       bookmaker: slip.bookmaker,
       safetyScore: m.safetyScore,
       riskLevel: m.riskLevel,
+      country: data.fixture.country,
+      countryFlag: data.fixture.countryFlag,
+      league: data.fixture.league,
+      leagueHeading: data.fixture.leagueHeading,
     });
     navigation.navigate('BetSlip');
   };
 
-  const qualified = useMemo(
-    () => (data?.markets ?? []).filter((m) => m.category !== 'AVOID'),
-    [data],
-  );
+  const qualified = useMemo(() => {
+    const recMarket = data?.recommended?.market;
+    const ranked = data?.rankedMarkets ?? [];
+    return (data?.markets ?? [])
+      .filter((m) => m.category !== 'AVOID')
+      .slice()
+      .sort((a, b) => {
+        if (recMarket && a.market === recMarket) return -1;
+        if (recMarket && b.market === recMarket) return 1;
+        const ra = ranked.indexOf(a.market);
+        const rb = ranked.indexOf(b.market);
+        const ia = ra >= 0 ? ra : 999;
+        const ib = rb >= 0 ? rb : 999;
+        return ia - ib || (b.analysisScore ?? b.safetyScore) - (a.analysisScore ?? a.safetyScore);
+      });
+  }, [data]);
   const avoided = useMemo(
-    () => (data?.markets ?? []).filter((m) => m.category === 'AVOID'),
+    () =>
+      (data?.markets ?? [])
+        .filter((m) => m.category === 'AVOID')
+        .slice()
+        .sort((a, b) => (a.analysisScore ?? a.safetyScore) - (b.analysisScore ?? b.safetyScore)),
     [data],
   );
   const visibleMarkets = showAvoid ? [...qualified, ...avoided] : qualified;
@@ -76,7 +119,7 @@ export function BetFixtureScreen({ route, navigation }: Props) {
       style={common.screen}
       contentContainerStyle={{ paddingBottom: 48, flexGrow: 1 }}
       keyboardShouldPersistTaps="handled"
-      refreshControl={<RefreshControl refreshing={loading} onRefresh={load} tintColor={colors.accent} />}
+      refreshControl={<RefreshControl refreshing={loading && !data} onRefresh={() => void load()} tintColor={colors.accent} />}
     >
       {error ? (
         <View style={common.card}>
@@ -86,72 +129,57 @@ export function BetFixtureScreen({ route, navigation }: Props) {
       ) : null}
       {data ? (
         <>
-          <Text style={common.title} numberOfLines={2}>
-            {data.fixture.home.name} vs {data.fixture.away.name}
-          </Text>
+          {data.fixture.live ? (
+            <View style={[common.card, { marginBottom: spacing.md }]}>
+              <LiveScoreboard
+                home={data.fixture.home.name}
+                away={data.fixture.away.name}
+                score={data.fixture.score}
+                minute={data.fixture.minute}
+              />
+            </View>
+          ) : (
+            <Text style={common.title} numberOfLines={2}>
+              {data.fixture.home.name} vs {data.fixture.away.name}
+            </Text>
+          )}
           <Text style={common.subtitle}>
             {data.fixture.leagueHeading ||
               [data.fixture.countryFlag, data.fixture.country, data.fixture.league].filter(Boolean).join(' · ')}
             {data.fixture.venue ? ` · ${data.fixture.venue}` : ''}
-            {' · '}
-            {new Date(data.fixture.kickoffUtc).toLocaleString()}
+            {data.fixture.live ? '' : ` · ${new Date(data.fixture.kickoffUtc).toLocaleString()}`}
           </Text>
-          {data.fixture.live ? (
-            <View style={common.card}>
-              <StatusBadge label="LIVE" tone="danger" />
-              <Text style={common.metric}>
-                {data.fixture.score?.home ?? '-'} — {data.fixture.score?.away ?? '-'}
-              </Text>
-              <Text style={common.cardBody}>{data.fixture.minute ? `${data.fixture.minute}'` : 'In play'}</Text>
-            </View>
-          ) : null}
-
-          {data.ai ? (
-            <View style={common.card}>
-              <View style={common.row}>
-                <Text style={common.cardTitle}>Step 1 — Analyse both teams</Text>
-                <StatusBadge label={data.ai.source === 'openai' ? 'CHATGPT' : 'AI READ'} tone="ok" />
-              </View>
-              <Text style={common.cardBody}>{data.ai.homeRead}</Text>
-              <Text style={[common.cardBody, { marginTop: 6 }]}>{data.ai.awayRead}</Text>
-              <Text style={[common.cardBody, { marginTop: 6 }]}>{data.ai.summary}</Text>
-              {data.ai.lean ? (
-                <Text style={[common.cardBody, { marginTop: 6 }]}>Lean: {data.ai.lean}</Text>
-              ) : null}
-              {data.ai.note ? (
-                <Text style={[common.cardBody, { marginTop: 6 }]}>{data.ai.note}</Text>
-              ) : null}
-            </View>
-          ) : null}
-
-          {data.multiScore ? (
-            <View style={common.card}>
-              <Text style={common.cardTitle}>Multiscore</Text>
-              <Text style={[common.cardTitle, { fontSize: 18 }]}>
-                {data.multiScore.scores.map((s) => s.line).join('  ·  ')}
-              </Text>
-              <Text style={common.metric}>{data.multiScore.analysedOdds ?? '—'}</Text>
-              <Text style={common.cardBody}>
-                {data.multiScore.side === 'HOME' ? 'Home' : 'Away'} win combo · combined {data.multiScore.combinedProbability}%
-              </Text>
-              <Text style={[common.cardBody, { marginTop: 6 }]}>{data.multiScore.reason}</Text>
-            </View>
+          {aiLoading ? (
+            <Text style={[common.cardBody, { color: colors.accent, marginBottom: 8 }]}>
+              AI refining pick…
+            </Text>
           ) : null}
 
           {data.recommended ? (
             <View style={common.card}>
               <View style={common.row}>
-                <Text style={common.cardTitle}>Step 2 — Bet to use</Text>
-                <StatusBadge label={data.recommended.riskLevel} tone="ok" />
+                <Text style={common.cardTitle}>Safest</Text>
+                <StatusBadge
+                  label={`${data.recommended.analysisScore ?? data.recommended.safetyScore}%`}
+                  tone={(data.recommended.analysisScore ?? data.recommended.safetyScore) >= 80 ? 'ok' : (data.recommended.analysisScore ?? data.recommended.safetyScore) >= 70 ? 'info' : 'warn'}
+                />
               </View>
-              <Text style={common.metric}>
-                {data.recommended.analysisScore ?? data.recommended.safetyScore}
+              <Text style={[common.metric, { fontSize: 28 }]}>
+                {data.recommended.analysisScore ?? data.recommended.safetyScore}%
               </Text>
-              <Text style={common.cardBody}>Analysis score / 100</Text>
-              <Text style={[common.cardTitle, { fontSize: 18 }]}>{data.recommended.label}</Text>
+              <Text style={common.cardBody}>Safety · {data.recommended.riskLevel}</Text>
+              <Text style={[common.cardTitle, { fontSize: 18 }]}>
+                {data.cardLines?.find((l) => l.family === 'Safest')?.detail || data.recommended.label}
+              </Text>
+              <View style={{ marginTop: 8, marginBottom: 6 }}>
+                <MarketLines
+                  lines={data.cardLines}
+                  score={data.recommended.analysisScore ?? data.recommended.safetyScore}
+                  stake={data.recommended.label}
+                />
+              </View>
               <Text style={common.cardBody}>
                 Analysed odds {data.recommended.analysedOdds ?? data.recommended.odds.bestOdds ?? '—'} (confirm on Bet9ja/SportyBet)
-                {' · '}conf {data.recommended.confidence ?? data.recommended.safetyScore}%
                 {data.recommended.sampleDeliveryRate != null
                   ? ` · delivery ${data.recommended.sampleDeliveryRate}%`
                   : ''}
@@ -176,6 +204,74 @@ export function BetFixtureScreen({ route, navigation }: Props) {
               >
                 <Text style={common.primaryBtnText}>Add to slip</Text>
               </Pressable>
+            </View>
+          ) : (
+            <View style={common.card}>
+              <StatusBadge label="NO SAFE PICK" tone="danger" />
+              <Text style={[common.cardBody, { marginTop: 6 }]}>
+                {data.avoidReasons.join(' · ') || 'No market cleared 70% safety on this fixture.'}
+              </Text>
+            </View>
+          )}
+
+          {data.ai ? (
+            <View style={common.card}>
+              <View style={common.row}>
+                <Text style={common.cardTitle}>Both teams + web-search AI vs stats</Text>
+                <StatusBadge
+                  label={data.ai.source === 'openai' ? 'CHATGPT' : 'FORM READ'}
+                  tone="ok"
+                />
+              </View>
+              <Text style={common.cardBody}>{data.ai.homeRead}</Text>
+              <Text style={[common.cardBody, { marginTop: 6 }]}>{data.ai.awayRead}</Text>
+              <Text style={[common.cardBody, { marginTop: 6 }]}>{data.ai.summary}</Text>
+              {data.ai.statsMarket ? (
+                <Text style={[common.cardBody, { marginTop: 6 }]}>
+                  Stats pick {data.ai.statsMarket}
+                  {data.ai.chosenFrom ? ` · kept ${data.ai.chosenFrom === 'openai' ? 'ChatGPT' : 'stats'} as the bet` : ''}
+                </Text>
+              ) : null}
+              {data.ai.lean ? (
+                <Text style={[common.cardBody, { marginTop: 6 }]}>Lean: {data.ai.lean}</Text>
+              ) : null}
+              {data.ai.note ? (
+                <Text style={[common.cardBody, { marginTop: 6 }]}>{data.ai.note}</Text>
+              ) : null}
+              {data.ai.webSources?.length ? (
+                <View style={{ marginTop: 8 }}>
+                  <Text style={common.cardBody}>Forecast sources searched:</Text>
+                  {data.ai.webSources.slice(0, 3).map((source) => (
+                    <Pressable
+                      key={source.url}
+                      onPress={() => void Linking.openURL(source.url).catch(() => undefined)}
+                    >
+                      <Text style={{ color: colors.accent, marginTop: 4 }} numberOfLines={2}>
+                        {source.title || source.url}
+                      </Text>
+                    </Pressable>
+                  ))}
+                </View>
+              ) : null}
+            </View>
+          ) : null}
+
+          {data.multiScore ? (
+            <View style={common.card}>
+              <Text style={common.cardTitle}>Multiscore</Text>
+              <Text style={[common.cardBody, { marginBottom: 8 }]}>
+                {data.multiScore.side === 'HOME' ? 'Home to win' : 'Away to win'}
+              </Text>
+              {data.multiScore.scores.map((s) => (
+                <Text key={s.line} style={[common.cardTitle, { fontSize: 18, marginTop: 4 }]}>
+                  {s.line}  {Math.round(s.probability)}%
+                </Text>
+              ))}
+              <Text style={[common.metric, { marginTop: 10 }]}>{data.multiScore.analysedOdds ?? '—'}</Text>
+              <Text style={common.cardBody}>
+                Combined {data.multiScore.combinedProbability}%
+              </Text>
+              <Text style={[common.cardBody, { marginTop: 6 }]}>{data.multiScore.reason}</Text>
             </View>
           ) : null}
 
@@ -251,19 +347,22 @@ export function BetFixtureScreen({ route, navigation }: Props) {
               </Pressable>
             ) : null}
           </View>
-          {visibleMarkets.map((m) => (
+          {visibleMarkets.map((m) => {
+            const score = m.analysisScore ?? m.safetyScore;
+            const isSafest = data.recommended?.market === m.market;
+            return (
             <View key={m.market} style={common.card}>
               <View style={common.row}>
                 <Text style={[common.cardTitle, { flex: 1, flexShrink: 1 }]} numberOfLines={2}>{m.label}</Text>
                 <StatusBadge
-                  label={m.category}
-                  tone={m.category === 'AVOID' ? 'danger' : m.category === 'SAFEST' ? 'ok' : 'warn'}
+                  label={isSafest ? `SAFEST ${score}%` : `${score}%`}
+                  tone={m.category === 'AVOID' ? 'danger' : isSafest ? 'ok' : score >= 80 ? 'ok' : score >= 70 ? 'info' : 'warn'}
                 />
               </View>
               <Text style={common.cardBody}>
-                Analysed {m.analysedOdds ?? 'n/a'}
-                {m.odds.bestOdds != null ? ` · guide ${m.odds.bestOdds}` : ' · site price not invented'}
-                {' · '}score {m.analysisScore ?? m.safetyScore}/100
+                Safety {score}% · {m.category === 'AVOID' ? 'Avoid' : m.riskLevel}
+                {' · '}analysed {m.analysedOdds ?? 'n/a'}
+                {m.odds.bestOdds != null ? ` · guide ${m.odds.bestOdds}` : ''}
                 {m.sampleDeliveryRate != null ? ` · delivery ${m.sampleDeliveryRate}%` : ''}
               </Text>
               <Text style={[common.cardBody, { marginTop: 4 }]} numberOfLines={3}>{m.historicalNote}</Text>
@@ -278,7 +377,8 @@ export function BetFixtureScreen({ route, navigation }: Props) {
                 </Pressable>
               ) : null}
             </View>
-          ))}
+            );
+          })}
         </>
       ) : null}
       <View style={{ height: 40 }} />

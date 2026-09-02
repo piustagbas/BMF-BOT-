@@ -32,14 +32,19 @@ export function recheckLive(opts: {
   market: PairMarket;
   now?: Date;
   requestedSide: FxSide;
+  mode?: FxMode;
 }): RecheckResult {
   const now = opts.now ?? new Date();
   const blockers: string[] = [];
   const quote = opts.market.quote;
+  const mode = opts.mode ?? 'PAPER';
   if (opts.requestedSide !== opts.signal.side) blockers.push('Clicked side does not match the setup');
   if (signalExpired(opts.signal.expiresAt, now)) blockers.push('Signal expired — revalidation failed');
   if (isQuoteStale(quote, now.getTime())) blockers.push('Quote is stale — refusing execution');
-  if (quote.dataQuality !== 'LIVE') blockers.push(`Feed quality ${quote.dataQuality} — live tick required`);
+  if (quote.dataQuality === 'SYNTHETIC') blockers.push('Synthetic prices — refusing execution');
+  if (mode === 'LIVE' && quote.dataQuality !== 'LIVE') {
+    blockers.push(`Feed quality ${quote.dataQuality} — live tick required`);
+  }
   const fill = opts.requestedSide === 'BUY' ? quote.ask : quote.bid;
   const stillInZone = inEntryZone(fill, opts.signal.zone);
   if (!stillInZone) blockers.push('Price left the entry zone');
@@ -73,7 +78,7 @@ export function brokerExecutionChecks(opts: {
   quote: FxQuote;
 }): string[] {
   const blockers: string[] = [];
-  if (opts.killSwitch) blockers.push('Kill switch is ON');
+  if (opts.mode === 'LIVE' && opts.killSwitch) blockers.push('Kill switch is ON');
   if (opts.mode === 'LIVE') {
     blockers.push(opts.liveBlockedReason ?? 'Live broker adapter is not connected');
   }

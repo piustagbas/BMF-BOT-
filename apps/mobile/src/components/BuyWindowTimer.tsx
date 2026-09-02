@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Text, View } from 'react-native';
 import { StatusBadge } from './StatusBadge';
 import { colors, common, spacing } from '../theme';
@@ -18,27 +18,68 @@ export type ChartGuideView = {
 
 export type BuyWindowState = 'WAIT' | 'ENTER' | 'CLOSED';
 
-function remainingSec(iso?: string, now = Date.now()): number | null {
+const TF_SECONDS: Record<string, number> = {
+  '1m': 60,
+  '5m': 300,
+  '15m': 900,
+  '30m': 1800,
+  '1h': 3600,
+  '4h': 14_400,
+};
+
+function timeframeSec(tf?: string): number {
+  return TF_SECONDS[tf ?? ''] ?? 300;
+}
+
+/** Always-live candle clock so the countdown never freezes on a stale signal timestamp. */
+function liveCandleWindow(tf: string, nowMs = Date.now()) {
+  const sec = timeframeSec(tf);
+  const nowSec = Math.floor(nowMs / 1000);
+  const startSec = nowSec - (nowSec % sec);
+  const closeSec = startSec + sec;
+  return {
+    closeMs: closeSec * 1000,
+    endMs: (closeSec + sec) * 1000,
+    remainingClose: Math.max(0, closeSec - nowSec),
+    remainingEnd: Math.max(0, closeSec + sec - nowSec),
+  };
+}
+
+function parseMs(iso?: string): number | null {
   if (!iso) return null;
   const t = Date.parse(iso);
-  if (!Number.isFinite(t)) return null;
-  return Math.max(0, Math.floor((t - now) / 1000));
+  return Number.isFinite(t) ? t : null;
 }
 
 function formatClock(sec: number): string {
-  const m = Math.floor(sec / 60);
-  const s = sec % 60;
+  const m = Math.floor(Math.max(0, sec) / 60);
+  const s = Math.max(0, sec) % 60;
   return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
+function formatLocal(ms: number): string {
+  return new Date(ms).toLocaleTimeString(undefined, {
+    hour: 'numeric',
+    minute: '2-digit',
+    second: '2-digit',
+  });
 }
 
 export function windowStateFromChart(
   chart: ChartGuideView,
   now = Date.now(),
 ): BuyWindowState {
-  const toClose = remainingSec(chart.candleClosesAt, now);
-  const toEnd = remainingSec(chart.entryWindowEndsAt, now);
-  if (toClose != null && toClose > 0) return 'WAIT';
-  if (toEnd != null && toEnd > 0) return 'ENTER';
+  const live = liveCandleWindow(chart.primary, now);
+  const closeMs = parseMs(chart.candleClosesAt);
+  const toClose =
+    closeMs != null && closeMs > now
+      ? Math.floor((closeMs - now) / 1000)
+      : live.remainingClose;
+  const endMs = parseMs(chart.entryWindowEndsAt);
+  const toEnd =
+    endMs != null && endMs > now ? Math.floor((endMs - now) / 1000) : live.remainingEnd;
+  if (toClose > 0) return 'WAIT';
+  if (toEnd > 0) return 'ENTER';
   return 'CLOSED';
 }
 
@@ -46,11 +87,13 @@ export function BuyWindowTimer({
   chart,
   signalType,
   compact = false,
+  testsPassed = true,
   onExpire,
 }: {
   chart: ChartGuideView;
   signalType: string;
   compact?: boolean;
+  testsPassed?: boolean;
   onExpire?: () => void;
 }) {
   const [now, setNow] = useState(() => Date.now());
@@ -61,20 +104,29 @@ export function BuyWindowTimer({
     return () => clearInterval(id);
   }, []);
 
-  const state = windowStateFromChart(chart, now);
-  const toClose = remainingSec(chart.candleClosesAt, now) ?? 0;
-  const toEnd = remainingSec(chart.entryWindowEndsAt, now) ?? 0;
+  const live = useMemo(() => liveCandleWindow(chart.primary, now), [chart.primary, now]);
+  const closeMs = parseMs(chart.candleClosesAt);
+  const endMs = parseMs(chart.entryWindowEndsAt);
+  const toClose =
+    closeMs != null && closeMs > now
+      ? Math.floor((closeMs - now) / 1000)
+      : live.remainingClose;
+  const toEnd =
+    endMs != null && endMs > now ? Math.floor((endMs - now) / 1000) : live.remainingEnd;
+  const state: BuyWindowState = toClose > 0 ? 'WAIT' : toEnd > 0 ? 'ENTER' : 'CLOSED';
   const displaySec = state === 'WAIT' ? toClose : toEnd;
+  const closeAt = closeMs != null && closeMs > now ? closeMs : live.closeMs;
+  const windowEnd = endMs != null && endMs > now ? endMs : live.endMs;
 
   const wasOpen = useRef(true);
   useEffect(() => {
-    if (!isBuy || !onExpire) return;
+    if (!onExpire) return;
     if (state === 'CLOSED' && wasOpen.current) {
       wasOpen.current = false;
       onExpire();
     }
     if (state !== 'CLOSED') wasOpen.current = true;
-  }, [isBuy, state, onExpire]);
+  }, [state, onExpire]);
 
   const tone = state === 'WAIT' ? 'warn' : state === 'ENTER' ? 'ok' : 'danger';
   const label =
@@ -85,18 +137,15 @@ export function BuyWindowTimer({
         : 'WINDOW CLOSED';
 
   if (compact) {
-    if (!isBuy) {
-      return <StatusBadge label={`${chart.primary} → ${chart.confirm}`} tone="info" />;
-    }
-    return <StatusBadge label={label} tone={tone} />;
+    return <StatusBadge label={label} tone={!testsPassed && isBuy ? 'warn' : tone} />;
   }
 
   const headline =
     state === 'WAIT'
-      ? `Wait ${formatClock(displaySec)} for the ${chart.primary} candle to close`
+      ? `Wait ${formatClock(displaySec)} — enter after ${formatLocal(closeAt)}`
       : state === 'ENTER'
-        ? `Entry window ${formatClock(displaySec)} left`
-        : 'This timing window is over — refresh before you buy';
+        ? `Enter window ${formatClock(displaySec)} left · until ${formatLocal(windowEnd)}`
+        : 'This candle window ended — the next one is already counting';
 
   return (
     <View
@@ -119,15 +168,23 @@ export function BuyWindowTimer({
       <Text
         style={{
           color: colors.text,
-          fontSize: 22,
+          fontSize: 28,
           fontWeight: '800',
           marginTop: 8,
           fontVariant: ['tabular-nums'],
         }}
       >
-        {state === 'CLOSED' ? '0:00' : formatClock(displaySec)}
+        {formatClock(displaySec)}
       </Text>
       <Text style={[common.cardBody, { marginTop: 4, color: colors.text }]}>{headline}</Text>
+      <Text style={[common.cardBody, { marginTop: 6 }]}>
+        {chart.primary} candle closes {formatLocal(closeAt)} · window ends {formatLocal(windowEnd)}
+      </Text>
+      {!testsPassed ? (
+        <Text style={[common.cardBody, { marginTop: 6, color: colors.danger, fontWeight: '700' }]}>
+          Clock is running, but hard tests have not passed — do not buy.
+        </Text>
+      ) : null}
       {chart.instruction ? (
         <Text style={[common.cardBody, { marginTop: 6 }]}>{chart.instruction}</Text>
       ) : null}

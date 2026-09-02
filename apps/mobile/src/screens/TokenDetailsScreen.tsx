@@ -1,9 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Pressable,
   RefreshControl,
   ScrollView,
+  Switch,
   Text,
   View,
 } from 'react-native';
@@ -15,6 +17,7 @@ import {
   fetchTokenOhlcv,
   fetchTokenSafety,
   fetchTokenSignal,
+  fetchSwapPortfolio,
   openPaperFromSignal,
   proposeTrade,
   removeFromWatchlist,
@@ -24,12 +27,14 @@ import {
   type TokenOhlcvCandle,
 } from '../api/client';
 import { StatusBadge } from '../components/StatusBadge';
-import { WhyNotBuyPanel } from '../components/WhyNotBuyPanel';
+import { WhyNotBuyPanel, hardTestsPassed } from '../components/WhyNotBuyPanel';
 import { BuyWindowTimer } from '../components/BuyWindowTimer';
 import { CandlestickChart } from '../components/CandlestickChart';
 import { DexScreenerBuyButton } from '../components/DexScreenerBuyButton';
+import { TradePanel } from '../components/TradePanel';
 import { TokenLogo } from '../components/TokenLogo';
 import { CopyableAddress } from '../components/CopyableAddress';
+import { useWallet } from '../wallet/WalletContext';
 import { buildTokenSourceTags } from '../utils/sourceTags';
 import { formatPairAgeHours } from '@memecoinbot/shared';
 import {
@@ -40,11 +45,13 @@ import {
   spacing,
 } from '../theme';
 import type { RootStackParamList } from '../navigation/types';
+import { useMemecoinAutoTrade } from '../settings/MemecoinAutoTradeContext';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'TokenDetails'>;
 
 export function TokenDetailsScreen({ route, navigation }: Props) {
-  const { address } = route.params;
+  const { address, action } = route.params;
+  const wallet = useWallet();
   const [token, setToken] = useState<ScannerToken | null>(null);
   const [safety, setSafety] = useState<Awaited<ReturnType<typeof fetchTokenSafety>> | null>(
     null,
@@ -53,8 +60,14 @@ export function TokenDetailsScreen({ route, navigation }: Props) {
   const [watched, setWatched] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [demoBusy, setDemoBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [actionMsg, setActionMsg] = useState<string | null>(null);
+  const [tradeSide, setTradeSide] = useState<'BUY' | 'SELL' | null>(action ?? null);
+  const [heldQty, setHeldQty] = useState(0);
+  const { addresses: autoTradeAddresses, toggle: toggleAutoTrade } =
+    useMemecoinAutoTrade();
+  const autoTrade = autoTradeAddresses.includes(address);
   const [chartTf, setChartTf] = useState('5m');
   const [candles, setCandles] = useState<TokenOhlcvCandle[]>([]);
   const [chartLoading, setChartLoading] = useState(false);
@@ -106,14 +119,18 @@ export function TokenDetailsScreen({ route, navigation }: Props) {
         title: t.symbol ? `$${t.symbol}` : 'Token',
       });
 
-      const [s, sig, w] = await Promise.all([
+      const [s, sig, w, port] = await Promise.all([
         fetchTokenSafety(address).catch(() => null),
         fetchTokenSignal(address).catch(() => null),
         watchlistExists(address).catch(() => ({ watched: false })),
+        fetchSwapPortfolio().catch(() => null),
       ]);
       setSafety(t.safety ?? s);
       setSignal(sig);
       setWatched(Boolean(w.watched));
+      const held =
+        port?.positions.find((p) => p.tokenAddress === address)?.qty ?? 0;
+      setHeldQty(held);
 
       if (!seededTf.current) {
         seededTf.current = true;
@@ -205,6 +222,55 @@ export function TokenDetailsScreen({ route, navigation }: Props) {
       setError(e instanceof Error ? e.message : 'Action failed');
     } finally {
       setBusy(false);
+    }
+  };
+
+  const buyActive = signal?.signalType === 'BUY';
+  const testsPassed = Boolean(
+    buyActive &&
+      (signal?.whyNotBuy
+        ? hardTestsPassed(signal.whyNotBuy)
+        : !(signal?.failedChecks && signal.failedChecks.length)),
+  );
+  const sellLiqOk = (token?.liquidityUsd ?? 0) >= 10_000;
+  const sellDataOk = !token?.dataConflict;
+  const sellHeldOk = heldQty > 0;
+  const sellWalletOk = wallet.connected;
+  const sellPassed = sellWalletOk && sellLiqOk && sellDataOk && sellHeldOk;
+  const sellReady = sellWalletOk && sellLiqOk && sellDataOk;
+  const sellBlockers = [
+    !sellWalletOk ? 'Connect Phantom or Solflare first' : null,
+    !sellHeldOk ? 'No position recorded for this token in the app' : null,
+    !sellLiqOk ? 'Liquidity is too thin to exit safely' : null,
+    !sellDataOk ? 'Market data conflict — do not sell blindly' : null,
+  ].filter(Boolean) as string[];
+
+  const demoTrade = async () => {
+    if (!testsPassed) {
+      const msg =
+        'Demo trade is blocked. BUY did not pass the hard tests. Do not buy — this is how you avoid a loss.';
+      setError(msg);
+      Alert.alert('Do not buy', msg);
+      return;
+    }
+    setDemoBusy(true);
+    setActionMsg(null);
+    setError(null);
+    try {
+      const result = await openPaperFromSignal(address);
+      const pos = result.position;
+      const msg = pos
+        ? `Demo $${pos.symbol} opened · $${Number(pos.sizeUsd).toFixed(2)} at ${pos.entryPrice}`
+        : 'Demo trade opened';
+      setActionMsg(msg);
+      Alert.alert('Demo trade opened', `${msg}\nOpen More → Demo trading to watch TP/SL.`);
+      await refreshAll();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Demo trade failed';
+      setError(msg);
+      Alert.alert('Demo trade blocked', msg);
+    } finally {
+      setDemoBusy(false);
     }
   };
 
@@ -309,6 +375,9 @@ export function TokenDetailsScreen({ route, navigation }: Props) {
             label="Buys/Sells"
             value={`${token?.buys24h ?? '—'} / ${token?.sells24h ?? '—'}`}
           />
+          <Metric label="Network" value="Solana" />
+          <Metric label="Pair" value={token?.pairAddress ? `${token.dexId ?? 'DEX'}` : '—'} />
+          <Metric label="Router" value="Jupiter" />
         </View>
         {sourceTags.length ? (
           <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 10 }}>
@@ -369,11 +438,11 @@ export function TokenDetailsScreen({ route, navigation }: Props) {
           <View style={common.row}>
             <Text style={common.cardTitle}>Signal</Text>
             <StatusBadge
-              label={signal.signalType}
+              label={testsPassed ? signal.signalType : signal.signalType === 'BUY' ? 'BUY BLOCKED' : signal.signalType}
               tone={
-                signal.signalType === 'BUY'
+                testsPassed
                   ? 'ok'
-                  : signal.signalType === 'NO_TRADE'
+                  : signal.signalType === 'NO_TRADE' || signal.signalType === 'BUY'
                     ? 'danger'
                     : 'warn'
               }
@@ -385,6 +454,23 @@ export function TokenDetailsScreen({ route, navigation }: Props) {
           <Text style={common.cardBody}>
             Buy score {Math.round(signal.buyScore ?? signal.signalScore)}/100
             {signal.strategy ? ` · ${signal.strategy.name}` : ''}
+          </Text>
+          <View style={[common.row, { marginTop: 10 }]}>
+            <Text style={[common.cardBody, { flex: 1 }]}>
+              Auto-trade this coin when BUY passes
+            </Text>
+            <Switch
+              value={autoTrade}
+              onValueChange={(v) => void toggleAutoTrade(address, v).catch(() => undefined)}
+              trackColor={{ false: colors.border, true: colors.accent }}
+            />
+          </View>
+          <Text style={[common.cardBody, { marginTop: 4, color: colors.muted, fontSize: 11 }]}>
+            {autoTrade
+              ? testsPassed
+                ? 'Auto is ON for this coin and tests passed — demo fill runs with the Telegram BUY.'
+                : 'Auto is ON for this coin. BUY stays locked until every hard test passes.'
+              : 'Turn this on to fill only this coin when its BUY passes every hard test.'}
           </Text>
           {signal.independent ? (
             <Text style={common.cardBody}>
@@ -415,12 +501,16 @@ export function TokenDetailsScreen({ route, navigation }: Props) {
             <BuyWindowTimer
               chart={signal.chart}
               signalType={signal.signalType}
-              onExpire={signal.signalType === 'BUY' ? refreshOnExpire : undefined}
+              testsPassed={testsPassed}
+              onExpire={refreshOnExpire}
             />
           ) : (
-            <Text style={[common.cardBody, { marginTop: 8 }]}>
-              Follow the candlestick chart above.
-            </Text>
+            <BuyWindowTimer
+              chart={{ primary: chartTf, confirm: '15m', style: 'SCALP' }}
+              signalType={signal.signalType}
+              testsPassed={testsPassed}
+              onExpire={refreshOnExpire}
+            />
           )}
           <Text style={[common.cardBody, { marginTop: 8 }]}>
             Entry {signal.levels.entryMin.toPrecision(4)}–
@@ -438,6 +528,22 @@ export function TokenDetailsScreen({ route, navigation }: Props) {
 
       {signal?.whyNotBuy ? <WhyNotBuyPanel panel={signal.whyNotBuy} /> : null}
 
+      <View style={common.card}>
+        <View style={common.row}>
+          <Text style={common.cardTitle}>Why not sell</Text>
+          <StatusBadge label={sellPassed ? 'SELL OK' : 'DO NOT SELL'} tone={sellPassed ? 'ok' : 'danger'} />
+        </View>
+        <Text style={[common.cardBody, { marginTop: 4, color: sellPassed ? colors.text : colors.danger }]}>
+          {sellPassed
+            ? `You hold this token (${heldQty}). Liquidity and data checks passed. Still not guaranteed.`
+            : sellBlockers.join(' · ') || 'Sell tests did not pass.'}
+        </Text>
+        <Text style={[common.cardBody, { marginTop: 8 }]}>
+          Wallet {sellWalletOk ? 'PASS' : 'FAIL'} · Position {sellHeldOk ? 'PASS' : 'FAIL'} · Liquidity{' '}
+          {sellLiqOk ? 'PASS' : 'FAIL'} · Data {sellDataOk ? 'PASS' : 'FAIL'}
+        </Text>
+      </View>
+
       {signal && !signal.whyNotBuy && signal.failedChecks?.length ? (
         <View style={common.card}>
           <Text style={common.cardTitle}>Why Not Buy</Text>
@@ -450,18 +556,80 @@ export function TokenDetailsScreen({ route, navigation }: Props) {
       ) : null}
 
       <View style={common.card}>
+        <Text style={common.cardTitle}>Trade in-app</Text>
+        <Text style={[common.cardBody, { marginBottom: spacing.sm }]}>
+          {testsPassed
+            ? 'Hard buy tests passed. Sell still needs its own checks (wallet, position, liquidity).'
+            : 'BUY is locked until every hard test passes. SELL is locked until you hold the token and exit tests pass.'}
+        </Text>
+        <View style={{ flexDirection: 'row', gap: 8 }}>
+          <Pressable
+            style={[common.primaryBtn, { flex: 1, opacity: testsPassed ? 1 : 0.4 }]}
+            onPress={() => {
+              if (!testsPassed) {
+                Alert.alert(
+                  'Do not buy',
+                  'This coin did not pass the buy tests. The bot will not let you buy so you do not run a loss. Wait for Why This Passed.',
+                );
+                return;
+              }
+              setTradeSide('BUY');
+            }}
+          >
+            <Text style={common.primaryBtnText}>
+              {testsPassed ? 'BUY' : 'BUY (tests failed)'}
+            </Text>
+          </Pressable>
+          <Pressable
+            style={[
+              common.secondaryBtn,
+              { flex: 1, borderColor: colors.danger, opacity: sellReady ? 1 : 0.4 },
+            ]}
+            onPress={() => {
+              if (!sellWalletOk || !sellLiqOk || !sellDataOk) {
+                Alert.alert(
+                  'Do not sell yet',
+                  sellBlockers.filter((b) => !b.includes('position')).join('\n') ||
+                    'Sell tests did not pass.',
+                );
+                return;
+              }
+              if (!sellHeldOk) {
+                Alert.alert(
+                  'No recorded position',
+                  'This app has no buy for this token. Continue only if this connected wallet holds it. On-chain balance, liquidity, and price impact are checked before fill.',
+                  [
+                    { text: 'Cancel', style: 'cancel' },
+                    { text: 'Continue', onPress: () => setTradeSide('SELL') },
+                  ],
+                );
+                return;
+              }
+              setTradeSide('SELL');
+            }}
+          >
+            <Text style={[common.secondaryBtnText, { color: colors.danger }]}>
+              {sellPassed ? 'SELL' : 'SELL (tests failed)'}
+            </Text>
+          </Pressable>
+        </View>
+      </View>
+
+      <View style={common.card}>
         <Text style={common.cardTitle}>Actions</Text>
         <Text style={[common.cardBody, { marginBottom: spacing.sm }]}>
-          Potential setup tools only — never guaranteed. Paper first.
+          Potential setup tools only — never guaranteed. Demo first.
           {signal?.signalType === 'BUY'
-            ? ' Buy on DexScreener opens that coin in the DexScreener app (or site) — it does not swap from this app.'
+            ? testsPassed
+              ? ' DexScreener is optional if you still want the external chart.'
+              : ' BUY is showing as a lean only — tests failed, so do not buy.'
             : ''}
         </Text>
         <View style={{ gap: 8 }}>
-          {signal?.signalType === 'BUY' ? (
+          {testsPassed ? (
             <DexScreenerBuyButton
               mint={address}
-              pairAddress={token?.pairAddress ?? signal.token.pairAddress}
+              pairAddress={token?.pairAddress ?? signal?.token.pairAddress}
             />
           ) : null}
           <Pressable
@@ -488,14 +656,27 @@ export function TokenDetailsScreen({ route, navigation }: Props) {
             </Text>
           </Pressable>
           <Pressable
-            style={common.secondaryBtn}
-            disabled={busy}
-            onPress={() =>
-              run(() => openPaperFromSignal(address), 'Paper position opened (if BUY)')
-            }
+            style={[
+              testsPassed ? common.primaryBtn : common.secondaryBtn,
+              { opacity: demoBusy ? 0.7 : testsPassed ? 1 : 0.5 },
+            ]}
+            disabled={busy || demoBusy}
+            onPress={() => void demoTrade()}
           >
-            <Text style={common.secondaryBtnText}>Paper trade from signal</Text>
+            {demoBusy ? (
+              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+                <ActivityIndicator color="#04140E" size="small" />
+                <Text style={common.primaryBtnText}>Opening demo trade…</Text>
+              </View>
+            ) : (
+              <Text style={testsPassed ? common.primaryBtnText : common.secondaryBtnText}>
+                {testsPassed ? 'Demo trade' : 'Demo trade (needs tests PASS)'}
+              </Text>
+            )}
           </Pressable>
+          {actionMsg ? (
+            <Text style={[common.cardBody, { color: colors.positive }]}>{actionMsg}</Text>
+          ) : null}
           <Pressable
             style={common.secondaryBtn}
             disabled={busy}
@@ -507,6 +688,19 @@ export function TokenDetailsScreen({ route, navigation }: Props) {
           </Pressable>
         </View>
       </View>
+
+      <TradePanel
+        visible={tradeSide != null}
+        side={tradeSide ?? 'BUY'}
+        tokenAddress={address}
+        symbol={token?.symbol ?? 'TOKEN'}
+        priceUsd={token?.priceUsd ?? null}
+        onClose={() => setTradeSide(null)}
+        onFilled={() => {
+          setActionMsg('Trade confirmed on-chain. Check Portfolio for the new position.');
+          void refreshAll();
+        }}
+      />
     </ScrollView>
   );
 }

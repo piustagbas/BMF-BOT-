@@ -2,7 +2,10 @@ import type { NavigatorScreenParams } from '@react-navigation/native';
 
 export type RootStackParamList = {
   Tabs: undefined;
-  TokenDetails: { address: string };
+  TokenDetails: { address: string; action?: 'BUY' | 'SELL' };
+  Notifications: undefined;
+  Portfolio: undefined;
+  TradeHistory: undefined;
   BetBot: NavigatorScreenParams<BetBotStackParamList> | undefined;
   ForexBot: NavigatorScreenParams<ForexBotStackParamList> | undefined;
 };
@@ -25,6 +28,6 @@ export type BetBotStackParamList = {
 };
 
 export type ForexBotStackParamList = {
-  ForexHome: undefined;
-  ForexSignal: { id: string; side: 'BUY' | 'SELL' };
+  ForexHome: { tab?: 'SETUPS' | 'OPEN' | 'JOURNAL' | 'RISK' | 'LAB'; notice?: string } | undefined;
+  ForexSignal: { symbol: string; id?: string; side?: 'BUY' | 'SELL' };
 };

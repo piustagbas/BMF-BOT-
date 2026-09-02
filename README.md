@@ -112,6 +112,31 @@ What people use in practice:
 
 Until a real Axiom feed is wired, the API reports `AXIOM DATA UNAVAILABLE` and will not claim Axiom-backed auto execution.
 
+## Football analysis pipeline
+
+The football bot has two layers: the legacy `/api/bet-bot/*` experience and a provider-independent analysis API. The new pipeline queries configured Sportmonks, API-Football, and football-data.org adapters in parallel, normalizes and matches fixtures, stores provenance in MongoDB, calculates weighted-form/Poisson markets, scores confidence and data quality, optionally compares odds, then sends only that structured result to OpenAI for schema-validated review. A failed provider is isolated; no provider data is fabricated.
+
+Set these server-only variables in `.env`:
+
+```bash
+SPORTMONKS_API_TOKEN=
+API_FOOTBALL_KEY=
+FOOTBALL_DATA_API_KEY=
+OPENAI_API_KEY=
+FOOTBALL_TIMEZONE=Africa/Lagos
+```
+
+Useful authenticated endpoints:
+
+- `GET /api/fixtures?date=YYYY-MM-DD` or `?day=monday`
+- `GET /api/fixtures/:id/data`
+- `GET /api/analysis/:id`
+- `GET /api/predictions/top?date=YYYY-MM-DD&minimumConfidence=60`
+- `GET /api/backtesting`
+- `GET /api/providers/status`
+
+Football outputs are probabilities and statistical evidence, never guaranteed wins or profit. Backtesting uses predictions generated before kickoff and reports no result when a leakage-safe historical sample is unavailable.
+
 ## Phase status
 
 - Phase 1–10: ✅ core trading stack

@@ -1,12 +1,21 @@
-import { Body, Controller, Get, Post, Query } from '@nestjs/common';
+import { Body, Controller, Get, Post, Query, UseGuards } from '@nestjs/common';
+import type { IUser } from '@memecoinbot/db';
+import { AuthGuard } from '../auth/auth.guard';
+import { CurrentUser } from '../auth/current-user.decorator';
 import { AutoTradingService } from '../trading/auto-trading.service';
+import { SettingsService } from '../settings/settings.service';
 
 @Controller()
 export class StatusController {
-  constructor(private readonly autoTrading: AutoTradingService) {}
+  constructor(
+    private readonly autoTrading: AutoTradingService,
+    private readonly settings: SettingsService,
+  ) {}
 
   @Get('auto-trading/status')
-  getAutoTradingStatus() {
+  @UseGuards(AuthGuard)
+  async getAutoTradingStatus(@CurrentUser() user: IUser) {
+    await this.settings.hydrateFromUser(user);
     return this.autoTrading.getStatus();
   }
 

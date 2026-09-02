@@ -1,9 +1,72 @@
-import { Controller, Get, Post, Query, Body } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Put, Query, UseGuards } from '@nestjs/common';
+import type { IUser } from '@memecoinbot/db';
+import { AuthGuard } from '../auth/auth.guard';
+import { CurrentUser } from '../auth/current-user.decorator';
 import { NotificationsService } from './notifications.service';
+import { TradeNotificationsService } from './trade-notifications.service';
 
 @Controller('notifications')
 export class NotificationsController {
-  constructor(private readonly notifications: NotificationsService) {}
+  constructor(
+    private readonly notifications: NotificationsService,
+    private readonly tradeNotes: TradeNotificationsService,
+  ) {}
+
+  @Get('inbox')
+  @UseGuards(AuthGuard)
+  inbox(@CurrentUser() user: IUser, @Query('limit') limit?: string) {
+    return this.tradeNotes.inbox(user, limit ? Number(limit) : 50);
+  }
+
+  @Post('inbox/read-all')
+  @UseGuards(AuthGuard)
+  readAll(@CurrentUser() user: IUser) {
+    return this.tradeNotes.markAllRead(user);
+  }
+
+  @Post('inbox/:id/read')
+  @UseGuards(AuthGuard)
+  readOne(@CurrentUser() user: IUser, @Param('id') id: string) {
+    return this.tradeNotes.markRead(user, id);
+  }
+
+  @Get('preferences')
+  @UseGuards(AuthGuard)
+  getPrefs(@CurrentUser() user: IUser) {
+    return this.tradeNotes.prefsForUser(user);
+  }
+
+  @Put('preferences')
+  @UseGuards(AuthGuard)
+  updatePrefs(
+    @CurrentUser() user: IUser,
+    @Body()
+    body: Partial<{
+      inApp: boolean;
+      push: boolean;
+      telegram: boolean;
+      buy: boolean;
+      sell: boolean;
+      confirmation: boolean;
+      failure: boolean;
+      takeProfit: boolean;
+      stopLoss: boolean;
+    }>,
+  ) {
+    return this.tradeNotes.updatePreferences(user, body);
+  }
+
+  @Post('push-token')
+  @UseGuards(AuthGuard)
+  savePush(
+    @CurrentUser() user: IUser,
+    @Body() body: { token: string },
+  ) {
+    if (!body?.token?.trim()) {
+      return { ok: false };
+    }
+    return this.tradeNotes.savePushToken(user, body.token.trim());
+  }
 
   @Get()
   list(@Query('limit') limit?: string) {

@@ -1,5 +1,8 @@
-import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
+import type { IUser } from '@memecoinbot/db';
 import type { PaperTestEvent } from '@memecoinbot/paper-engine';
+import { AuthGuard } from '../auth/auth.guard';
+import { CurrentUser } from '../auth/current-user.decorator';
 import { PaperService } from './paper.service';
 
 @Controller()
@@ -32,12 +35,15 @@ export class PaperController {
   }
 
   @Post('paper-trades/from-signal')
-  openFromSignal(@Body() body: { address: string }) {
-    return this.paperService.openFromSignal(body.address);
+  @UseGuards(AuthGuard)
+  openFromSignal(@CurrentUser() user: IUser, @Body() body: { address: string }) {
+    return this.paperService.openFromSignal(body.address, user);
   }
 
   @Post('paper-trades/manual')
+  @UseGuards(AuthGuard)
   openManual(
+    @CurrentUser() user: IUser,
     @Body()
     body: {
       address: string;
@@ -48,20 +54,23 @@ export class PaperController {
       symbol?: string;
     },
   ) {
-    return this.paperService.openManual(body);
+    return this.paperService.openManual(body, user);
   }
 
   @Post('paper-positions/sync')
-  sync() {
-    return this.paperService.syncPrices();
+  @UseGuards(AuthGuard)
+  sync(@CurrentUser() user: IUser) {
+    return this.paperService.syncPrices(user);
   }
 
   @Post('paper-positions/:id/test')
+  @UseGuards(AuthGuard)
   testEvent(
+    @CurrentUser() user: IUser,
     @Param('id') id: string,
     @Body() body: { event: PaperTestEvent },
   ) {
-    return this.paperService.applyTest(id, body.event);
+    return this.paperService.applyTest(id, body.event, user);
   }
 
   @Get('paper/dashboard')

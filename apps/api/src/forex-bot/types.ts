@@ -255,6 +255,8 @@ export const DEFAULT_FOREX_RISK = {
   maxAbsCorrelation: 0.7,
   maxUsdExposureLots: 0.5,
   staleQuoteMs: 180_000,
+  /** Yahoo 15m FX is delayed; paper fills use this window instead of broker ticks. */
+  yahooStaleMs: 45 * 60_000,
   maxSlippagePips: 1.2,
   signalTtlMs: 45 * 60 * 1000,
   minSetupQuality: 62,

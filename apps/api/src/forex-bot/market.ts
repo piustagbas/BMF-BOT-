@@ -25,8 +25,12 @@ export function quoteAgeMs(timestamp: string, now = Date.now()): number {
   return Math.max(0, now - Date.parse(timestamp));
 }
 
+export function staleLimitMs(quote: FxQuote): number {
+  return quote.source === 'yahoo-finance' ? DEFAULT_FOREX_RISK.yahooStaleMs : DEFAULT_FOREX_RISK.staleQuoteMs;
+}
+
 export function isQuoteStale(quote: FxQuote, now = Date.now()): boolean {
-  return quoteAgeMs(quote.timestamp, now) > DEFAULT_FOREX_RISK.staleQuoteMs || quote.stale;
+  return quoteAgeMs(quote.timestamp, now) > staleLimitMs(quote) || quote.stale;
 }
 
 export function applySpread(spec: PairSpec, mid: number): { bid: number; ask: number; spreadPips: number } {
@@ -88,7 +92,7 @@ export async function loadMarkets(now = new Date(), force = false): Promise<{
       m.candles = synthCandles(m.spec, m.quote.mid, now);
       m.atr = lastAtr(m.candles);
       m.spike = false;
-      if (m.quote.dataQuality === 'LIVE') m.quote.dataQuality = 'DEGRADED';
+      m.quote.dataQuality = 'SYNTHETIC';
     }
   }
   const source = [
@@ -104,7 +108,7 @@ export async function loadMarkets(now = new Date(), force = false): Promise<{
 function stampAges(markets: PairMarket[], nowMs: number): PairMarket[] {
   return markets.map((m) => {
     const ageMs = quoteAgeMs(m.quote.timestamp, nowMs);
-    const stale = ageMs > DEFAULT_FOREX_RISK.staleQuoteMs;
+    const stale = ageMs > staleLimitMs(m.quote) || m.quote.stale;
     return { ...m, quote: { ...m.quote, ageMs, stale } };
   });
 }
@@ -129,15 +133,15 @@ async function fetchYahooMarkets(now: Date): Promise<{ markets: PairMarket[]; so
         const meta = result?.meta;
         const mid = meta?.regularMarketPrice;
         if (!mid || !Number.isFinite(mid)) throw new Error(`yahoo ${spec.symbol} no price`);
-        const tsSec = meta.regularMarketTime ?? Math.floor(now.getTime() / 1000);
-        const sourceMs = tsSec * 1000;
-        const sourceAge = Math.max(0, now.getTime() - sourceMs);
-        const feedFresh = sourceAge <= 20 * 60_000;
-        const timestamp = (feedFresh ? now : new Date(sourceMs)).toISOString();
-        const { bid, ask, spreadPips } = applySpread(spec, mid);
         const candles = parseYahooCandles(result);
+        const lastCandleMs = candles.length ? candles[candles.length - 1]!.time : 0;
+        const tsSec = meta.regularMarketTime ?? Math.floor(now.getTime() / 1000);
+        const sourceMs = Math.max(tsSec * 1000, lastCandleMs);
+        const timestamp = new Date(sourceMs || now.getTime()).toISOString();
+        const { bid, ask, spreadPips } = applySpread(spec, mid);
         const atrValue = lastAtr(candles);
         const ageMs = quoteAgeMs(timestamp, now.getTime());
+        const feedFresh = ageMs <= DEFAULT_FOREX_RISK.yahooStaleMs;
         const quote: FxQuote = {
           symbol: spec.symbol,
           bid,
@@ -146,9 +150,10 @@ async function fetchYahooMarkets(now: Date): Promise<{ markets: PairMarket[]; so
           spreadPips,
           timestamp,
           ageMs,
-          stale: !feedFresh || ageMs > DEFAULT_FOREX_RISK.staleQuoteMs,
+          stale: !feedFresh,
           source: 'yahoo-finance',
-          dataQuality: candles.length >= 60 && feedFresh ? 'LIVE' : 'DEGRADED',
+          dataQuality:
+            candles.length >= 40 && feedFresh ? 'LIVE' : candles.length >= 16 ? 'DEGRADED' : 'SYNTHETIC',
         };
         return {
           spec,
@@ -192,6 +197,59 @@ function parseYahooCandles(result: {
   return out.slice(-180);
 }
 
+export const FX_CHART_INTERVALS: Record<string, { interval: string; range: string }> = {
+  '5m': { interval: '5m', range: '5d' },
+  '15m': { interval: '15m', range: '5d' },
+  '30m': { interval: '30m', range: '1mo' },
+  '1h': { interval: '60m', range: '1mo' },
+  '1d': { interval: '1d', range: '6mo' },
+};
+
+export function normalizeFxInterval(tf: string | undefined): string {
+  if (tf === '60m' || tf === '1h') return '1h';
+  if (tf && FX_CHART_INTERVALS[tf]) return tf;
+  return '15m';
+}
+
+export function toChartCandles(candles: FxCandle[]): Array<{
+  time: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}> {
+  return candles.map((c) => ({
+    time: c.time > 1e12 ? Math.floor(c.time / 1000) : c.time,
+    open: c.open,
+    high: c.high,
+    low: c.low,
+    close: c.close,
+    volume: c.volume,
+  }));
+}
+
+type OhlcvCache = { at: number; candles: FxCandle[] };
+const ohlcvCache = new Map<string, OhlcvCache>();
+const OHLCV_CACHE_MS = 20_000;
+
+export async function fetchYahooOhlcv(spec: PairSpec, timeframe: string, now = new Date()): Promise<FxCandle[]> {
+  const tf = normalizeFxInterval(timeframe);
+  const key = `${spec.symbol}:${tf}`;
+  const hit = ohlcvCache.get(key);
+  if (hit && now.getTime() - hit.at < OHLCV_CACHE_MS) return hit.candles;
+  const specTf = FX_CHART_INTERVALS[tf] ?? FX_CHART_INTERVALS['15m']!;
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(spec.yahoo)}?interval=${specTf.interval}&range=${specTf.range}`;
+  const res = await fetch(url, { headers: QUOTE_HEADERS, signal: AbortSignal.timeout(8000) });
+  if (!res.ok) throw new Error(`yahoo ${spec.symbol} ${tf} ${res.status}`);
+  const json = (await res.json()) as {
+    chart?: { result?: Array<Parameters<typeof parseYahooCandles>[0]> };
+  };
+  const candles = parseYahooCandles(json.chart?.result?.[0]).slice(-120);
+  ohlcvCache.set(key, { at: now.getTime(), candles });
+  return candles;
+}
+
 async function fetchSpotMarkets(now: Date): Promise<{ markets: PairMarket[]; source: string }> {
   const res = await fetch('https://open.er-api.com/v6/latest/USD', {
     headers: QUOTE_HEADERS,
@@ -217,7 +275,7 @@ async function fetchSpotMarkets(now: Date): Promise<{ markets: PairMarket[]; sou
       ageMs,
       stale: false,
       source: 'open.er-api.com',
-      dataQuality: 'DEGRADED',
+      dataQuality: 'SYNTHETIC',
     };
     const candles = synthCandles(spec, mid, now);
     const atrValue = lastAtr(candles);
@@ -279,7 +337,7 @@ export function refreshQuote(market: PairMarket, now = new Date()): FxQuote {
   return {
     ...market.quote,
     ageMs,
-    stale: ageMs > DEFAULT_FOREX_RISK.staleQuoteMs,
+    stale: ageMs > staleLimitMs(market.quote) || market.quote.stale,
   };
 }
 

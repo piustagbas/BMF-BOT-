@@ -59,24 +59,50 @@ export function lookupFotmobId(
 ): string | null {
   const n = foldName(name);
   if (!n) return null;
-  const direct = directory.get(n);
-  if (direct) return direct;
+  const aliases = teamAliases(n);
+  for (const a of aliases) {
+    const direct = directory.get(a);
+    if (direct) return direct;
+  }
+  let best: { id: string; score: number } | null = null;
   for (const [k, id] of directory) {
-    if (n.includes(k) || k.includes(n)) {
-      if (Math.min(n.length, k.length) >= 5) return id;
-    }
+    const score = Math.max(...aliases.map((a) => nameMatchScore(a, k)));
+    if (!best || score > best.score) best = { id, score };
   }
+  return best && best.score >= 80 ? best.id : null;
+}
+
+const WEAK_TOKENS = new Set(['united', 'city', 'fc', 'cf', 'afc', 'sc', 'ac', 'the', 'club', 'sporting', 'athletic', 'real']);
+
+function teamAliases(n: string): string[] {
+  const out = new Set<string>([n]);
   const compact = n.replace(/\b(fc|cf|afc|sc|ac|ssc|ud|cd|the)\b/g, '').replace(/\s+/g, ' ').trim();
-  if (compact && compact !== n) {
-    const hit = directory.get(compact);
-    if (hit) return hit;
+  if (compact) out.add(compact);
+  if (/^man u(td|nited)?$/.test(n) || n === 'manchester utd' || n === 'manutd') out.add('manchester united');
+  if (n === 'manchester united') {
+    out.add('man utd');
+    out.add('man united');
   }
-  if (n.startsWith('man ') && !n.startsWith('manchester ')) {
-    const expanded = `manchester ${n.slice(4)}`;
-    const hit = directory.get(expanded);
-    if (hit) return hit;
-  }
-  return null;
+  if (n === 'man city') out.add('manchester city');
+  if (n === 'manchester city') out.add('man city');
+  if (n.startsWith('man ') && !n.startsWith('manchester ')) out.add(`manchester ${n.slice(4)}`);
+  if (/\bmunchen\b|\bmuenchen\b/.test(n)) out.add(n.replace(/\bmue?nchen\b/g, 'munich'));
+  return [...out];
+}
+
+function nameMatchScore(a: string, b: string): number {
+  if (!a || !b) return 0;
+  if (a === b) return 100;
+  const ta = a.split(' ').filter((t) => t && !WEAK_TOKENS.has(t));
+  const tb = b.split(' ').filter((t) => t && !WEAK_TOKENS.has(t));
+  if (!ta.length || !tb.length) return 0;
+  const inter = ta.filter((t) => tb.includes(t));
+  if (!inter.length) return 0;
+  if (ta.join(' ') === tb.join(' ')) return 100;
+  const shorter = a.length <= b.length ? a : b;
+  const longer = a.length <= b.length ? b : a;
+  if (longer.includes(shorter) && shorter.length >= 6 && !WEAK_TOKENS.has(shorter)) return 85;
+  return (inter.length / Math.max(ta.length, tb.length)) * 100;
 }
 
 export function indexFotmobDirectory(teams: Array<{ id: string; name: string; shortName?: string }>): Map<string, string> {

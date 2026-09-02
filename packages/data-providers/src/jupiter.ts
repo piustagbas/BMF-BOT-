@@ -82,14 +82,19 @@ export async function fetchJupiterSwapQuote(params: {
   outputMint: string;
   amountAtomic: string;
   slippageBps?: number;
+  platformFeeBps?: number;
 }): Promise<ProviderResult<JupiterSwapQuote>> {
   try {
     const slippageBps = params.slippageBps ?? 100;
+    const feeQs =
+      params.platformFeeBps && params.platformFeeBps > 0
+        ? `&platformFeeBps=${params.platformFeeBps}`
+        : '';
     const url =
       `${quoteBase()}/quote?inputMint=${encodeURIComponent(params.inputMint)}` +
       `&outputMint=${encodeURIComponent(params.outputMint)}` +
       `&amount=${encodeURIComponent(params.amountAtomic)}` +
-      `&slippageBps=${slippageBps}`;
+      `&slippageBps=${slippageBps}${feeQs}`;
 
     const res = await fetchWithTimeout(url, {}, 10_000);
     if (!res.ok) {
@@ -139,19 +144,26 @@ export async function buildJupiterSwapTransaction(params: {
   quoteResponse: Record<string, unknown>;
   userPublicKey: string;
   wrapAndUnwrapSol?: boolean;
+  feeAccount?: string | null;
+  prioritizationFeeLamports?: 'auto' | number;
 }): Promise<ProviderResult<JupiterSwapTransaction>> {
   try {
+    const body: Record<string, unknown> = {
+      quoteResponse: params.quoteResponse,
+      userPublicKey: params.userPublicKey,
+      wrapAndUnwrapSol: params.wrapAndUnwrapSol ?? true,
+      dynamicComputeUnitLimit: true,
+      prioritizationFeeLamports: params.prioritizationFeeLamports ?? 'auto',
+    };
+    if (params.feeAccount) {
+      body.feeAccount = params.feeAccount;
+    }
     const res = await fetchWithTimeout(
       `${quoteBase()}/swap`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          quoteResponse: params.quoteResponse,
-          userPublicKey: params.userPublicKey,
-          wrapAndUnwrapSol: params.wrapAndUnwrapSol ?? true,
-          dynamicComputeUnitLimit: true,
-        }),
+        body: JSON.stringify(body),
       },
       15_000,
     );

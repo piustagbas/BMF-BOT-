@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { analyzeFixture, categorize, diversifyRecommended, formScore, impliedProb, pickHighOddsMarket } from './analysis';
+import { analyzeFixture, categorize, cardMarketLines, diversifyRecommended, formScore, impliedProb, pickHighOddsMarket, orderPlayableMarkets } from './analysis';
 import type { FixtureSummary, LineupInfo, TeamSnapshot } from './types';
 
 const lineup: LineupInfo = {
@@ -83,6 +83,33 @@ describe('bet analysis helpers', () => {
     }
   });
 
+  it('builds card lines from this match’s strongest markets and skips multiscore', () => {
+    const result = analyzeFixture({
+      fixture,
+      home: team({ id: 'h', name: 'Arsenal', popular: true, last5: 'WWWWW', goalsFor: 12, goalsAgainst: 2 }),
+      away: team({ id: 'a', name: 'Burnley', popular: false, last5: 'LLLLL', goalsFor: 2, goalsAgainst: 10 }),
+      h2hText: 'Limited H2H sample',
+      importance: 'League match',
+      lineup,
+      injuriesHome: [],
+      injuriesAway: [],
+      oddsNote: 'No official Bet9ja/SportyBet odds feed',
+    });
+    const lines = cardMarketLines(result);
+    expect(lines[0]?.family).toBe('Safest');
+    expect(lines[0]?.detail).toBeTruthy();
+    expect(lines.some((l) => l.family === 'Multiscore')).toBe(false);
+    expect(lines.length).toBeGreaterThanOrEqual(2);
+    expect(lines.length).toBeLessThanOrEqual(4);
+    const extras = lines.slice(1);
+    expect(extras.some((l) => l.family === 'Safest')).toBe(false);
+    for (const line of lines) {
+      expect(line.pct).toBeGreaterThan(0);
+      expect(line.pct).toBeLessThanOrEqual(100);
+      expect(line.detail.trim().length).toBeGreaterThan(0);
+    }
+  });
+
   it('always returns a pick even when scores are weak', () => {
     const result = analyzeFixture({
       fixture,
@@ -128,6 +155,11 @@ describe('bet analysis helpers', () => {
     expect(result.markets.some((m) => m.market === result.recommended!.market && m.category !== 'AVOID')).toBe(
       true,
     );
+    const weakLines = cardMarketLines(result);
+    expect(weakLines[0]?.family).toBe('Safest');
+    expect(weakLines.length).toBeGreaterThanOrEqual(3);
+    expect(weakLines.some((l) => l.family === 'BTTS' && l.detail)).toBe(true);
+    expect(weakLines.some((l) => /Over|Under/.test(l.family) && l.detail)).toBe(true);
   });
 
   it('can qualify a high-delivery market when form and sample agree', () => {
@@ -490,10 +522,15 @@ describe('bet analysis helpers', () => {
     expect(homeWins.recommended!.market).not.toBe('OVER_2_5');
     expect(['UNDER_2_5', 'BTTS_NO', 'UNDER_10_5_CORNERS']).toContain(tight.recommended!.market);
     expect(['BTTS_YES', 'OVER_2_5', 'HOME_OVER_1_5', 'DC_1X']).toContain(bothScore.recommended!.market);
+    const homeSafest = homeWins.recommended!.market;
+    const homeCard = cardMarketLines(homeWins)[0];
     const pack = diversifyRecommended([homeWins, tight, bothScore]);
     const markets = pack.map((a) => a.recommended!.market);
     expect(new Set(markets).size).toBe(3);
     expect(markets.filter((m) => m === 'OVER_2_5').length).toBeLessThanOrEqual(1);
+    expect(homeWins.recommended!.market).toBe(homeSafest);
+    expect(cardMarketLines(homeWins)[0]).toEqual(homeCard);
+    expect(homeCard?.family).toBe('Safest');
   });
 
   it('finds a longer-priced high-odds market even when the safest pick is short', () => {
@@ -596,5 +633,79 @@ describe('bet analysis helpers', () => {
     });
     expect(result.multiScore?.side).toBe('AWAY');
     expect(result.multiScore?.scores.map((s) => s.line)).toEqual(['0-2', '1-2', '0-3', '1-3']);
+  });
+
+  it('keeps the Safest card line on recommended even when BTTS has a higher raw score', () => {
+    const result = analyzeFixture({
+      fixture: { ...fixture, home: { id: 'h', name: 'Bournemouth', popular: false }, away: { id: 'a', name: 'Everton', popular: true } },
+      home: team({
+        id: 'h',
+        name: 'Bournemouth',
+        last5: 'WDLWW',
+        wins: 3,
+        draws: 1,
+        losses: 1,
+        goalsFor: 7,
+        goalsAgainst: 6,
+        sampleSize: 5,
+        recent: [
+          { isHome: true, gf: 2, ga: 1, opponent: 'A' },
+          { isHome: false, gf: 1, ga: 1, opponent: 'B' },
+          { isHome: true, gf: 0, ga: 2, opponent: 'C' },
+          { isHome: false, gf: 2, ga: 0, opponent: 'D' },
+          { isHome: true, gf: 2, ga: 2, opponent: 'E' },
+        ],
+      }),
+      away: team({
+        id: 'a',
+        name: 'Everton',
+        last5: 'WWWLW',
+        wins: 4,
+        draws: 0,
+        losses: 1,
+        goalsFor: 11,
+        goalsAgainst: 4,
+        sampleSize: 5,
+        recent: [
+          { isHome: false, gf: 3, ga: 1, opponent: 'A' },
+          { isHome: true, gf: 2, ga: 0, opponent: 'B' },
+          { isHome: false, gf: 2, ga: 1, opponent: 'C' },
+          { isHome: true, gf: 1, ga: 2, opponent: 'D' },
+          { isHome: false, gf: 3, ga: 0, opponent: 'E' },
+        ],
+      }),
+      h2hText: 'Limited H2H sample',
+      importance: 'League match',
+      lineup,
+      injuriesHome: [],
+      injuriesAway: [],
+      oddsNote: 'No official Bet9ja/SportyBet odds feed',
+    });
+    expect(result.recommended).not.toBeNull();
+    const rec = result.recommended!;
+    const btts = result.markets.find((m) => m.market === 'BTTS_YES');
+    const lines = cardMarketLines(result);
+    expect(lines[0]?.family).toBe('Safest');
+    expect(lines[0]?.detail.toLowerCase()).toContain(
+      rec.market === 'BTTS_YES' ? 'btts' : rec.label.replace(/\s+goals$/i, '').toLowerCase().slice(0, 8),
+    );
+    if (btts && rec.market !== 'BTTS_YES' && (btts.analysisScore ?? 0) > (rec.analysisScore ?? 0)) {
+      expect(lines[0]?.detail.toLowerCase()).not.toContain('btts');
+    }
+    const ordered = orderPlayableMarkets(result.markets, rec, result.rankedMarkets);
+    expect(ordered[0]?.market).toBe(rec.market);
+  });
+
+  it('lists recommended first even if another market has a higher analysis score', () => {
+    const ordered = orderPlayableMarkets(
+      [
+        { market: 'BTTS_YES', category: 'BEST_VALUE', analysisScore: 72, safetyScore: 72 },
+        { market: 'AWAY_OVER_1_5', category: 'SAFEST', analysisScore: 56, safetyScore: 56 },
+        { market: 'OVER_2_5', category: 'BEST_VALUE', analysisScore: 61, safetyScore: 61 },
+      ],
+      { market: 'AWAY_OVER_1_5' },
+      ['AWAY_OVER_1_5', 'OVER_2_5', 'BTTS_YES'],
+    );
+    expect(ordered.map((m) => m.market)).toEqual(['AWAY_OVER_1_5', 'OVER_2_5', 'BTTS_YES']);
   });
 });

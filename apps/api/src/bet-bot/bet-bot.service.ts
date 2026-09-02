@@ -1,5 +1,5 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
-import { analyzeFixture, diversifyRecommended, pickHighOddsMarket } from './analysis';
+import { analyzeFixture, cardMarketLines, diversifyRecommended, pickHighOddsMarket } from './analysis';
 import { analyseThenPick, openaiConfigured, openaiModel } from './aiAnalyst';
 import {
   footballDataConfigured,
@@ -11,11 +11,15 @@ import {
     loadTeamSnapshot,
     oddsApiConfigured,
     toFixtureSummary,
+    eventMatchKey,
+    namesClose,
+    type RawEvent,
 } from './football.provider';
 import { bookmakerConfig, fetchThirdBookOdds, mergeOdds, unavailableBooks, warmOddsCatalog } from './odds.provider';
 import { selectBookingLegs } from './booking';
 import { h2hNote } from './matchStats';
-import { MARKET_LABELS, isListedFootball, leagueCountry, leagueHeading, compareByMatchDay, localDayKey } from './popular';
+import { MARKET_LABELS, isListedFootball, leagueCountry, leagueHeading, compareByMatchDay, isOnCalendarDay, topCountryRank } from './popular';
+import { dateRangeForQuery, localDate } from './football-data.utils';
 import { BET_DISCLAIMER, type BookmakerId, type BetMarket, type FixtureAnalysis } from './types';
 
 export type SlipSelection = {
@@ -44,15 +48,35 @@ type StoredSlip = {
   createdAt: string;
 };
 
+type FixturesBoardResult = {
+  source: string;
+  count: number;
+  items: import('./types').FixtureSummary[];
+  warning?: string;
+  note?: string;
+  disclaimer: string;
+};
+
 @Injectable()
 export class BetBotService {
   private readonly logger = new Logger(BetBotService.name);
   private readonly slips = new Map<string, StoredSlip[]>();
   private readonly analysisCache = new Map<string, { at: number; data: FixtureAnalysis }>();
+  private readonly fixturesCache = new Map<string, { at: number; data: FixturesBoardResult }>();
+  private aiWarmInFlight = false;
+  private static readonly ANALYSIS_TTL_MS = 30 * 60 * 1000;
+  private static readonly FIXTURES_CACHE_TTL_MS = 5 * 60 * 1000;
 
   status() {
     const books = bookmakerConfig();
     return {
+      providers: {
+        sportmonks: process.env.SPORTMONKS_API_TOKEN?.trim() ? 'configured' : 'disabled',
+        apiFootball: process.env.API_FOOTBALL_KEY?.trim() ? 'configured' : 'disabled',
+        footballDataOrg: (process.env.FOOTBALL_DATA_API_KEY?.trim() || process.env.FOOTBALL_DATA_TOKEN?.trim())
+          ? 'configured'
+          : 'disabled',
+      },
       footballData: footballDataConfigured()
         ? 'football-data.org (merged with TheSportsDB)'
         : 'TheSportsDB public feed (no key needed)',
@@ -72,9 +96,10 @@ export class BetBotService {
         theSportsDb: 'active (fixtures + livescore)',
         footballData: footballDataConfigured() ? 'active' : 'optional token',
         oddsApi: oddsApiConfigured() ? 'active (guide odds + live scores)' : 'optional key',
+        liveScores: 'FotMob + SofaScore + Livescore JSON (HTML/ads blocked)',
       },
       ai: openaiConfigured()
-        ? `ChatGPT (${openaiModel()}) analyses both teams, then picks the market`
+        ? `ChatGPT (${openaiModel()}) searches forecast sources, reads both last-match cards, compares that to the stats model, then keeps the stronger pick`
         : 'Local two-team analyst (set OPENAI_API_KEY to use ChatGPT before the pick)',
       disclaimer: BET_DISCLAIMER,
     };
@@ -85,14 +110,32 @@ export class BetBotService {
     league?: string;
     popular?: string;
     date?: string;
+    day?: string;
     kickoffFrom?: string;
     kickoffTo?: string;
   }) {
+    const cacheKey = JSON.stringify(query);
+    const hit = this.fixturesCache.get(cacheKey);
+    if (hit && Date.now() - hit.at < BetBotService.FIXTURES_CACHE_TTL_MS) return hit.data;
+    const data = await this.loadFixtures(query);
+    this.fixturesCache.set(cacheKey, { at: Date.now(), data });
+    return data;
+  }
+
+  private async loadFixtures(query: {
+    q?: string;
+    league?: string;
+    popular?: string;
+    date?: string;
+    day?: string;
+    kickoffFrom?: string;
+    kickoffTo?: string;
+  }): Promise<FixturesBoardResult> {
     try {
-      const date = query.date;
+      const range = dateRangeForQuery({ date: query.date, day: query.day });
       const { source, items, warning } = await listFixtures({
-        dateFrom: date,
-        dateTo: date,
+        dateFrom: range.dateFrom,
+        dateTo: range.dateTo,
       });
       let rows = items.filter((f) => isListedFootball(f.league) || isListedFootball(f.competition));
       const popularOnly = query.popular === '1' || query.popular === 'true' || query.popular === 'only';
@@ -142,10 +185,14 @@ export class BetBotService {
     }
   }
 
-  async liveBoard(query: { popular?: string; q?: string; league?: string }) {
+  async liveBoard(query: { popular?: string; q?: string; league?: string; date?: string; day?: string }) {
     try {
       const { source, items } = await listLiveFixtures();
       let live = items;
+      const dateRange = dateRangeForQuery({ date: query.date, day: query.day });
+      if (dateRange.dateFrom) {
+        live = live.filter((fixture) => localDate(fixture.kickoffUtc, dateRange.timezone) === dateRange.dateFrom);
+      }
       const popularOnly = query.popular === '1' || query.popular === 'true' || query.popular === 'only';
       if (query.league) {
         const lg = query.league.toLowerCase();
@@ -165,21 +212,14 @@ export class BetBotService {
         live = live.filter((f) => f.popularMatch);
       }
       live.sort(byPopularThenLeague);
-      let upcoming = (await this.fixtures({ popular: 'all', q: query.q, league: query.league }))
-        .items.filter((f) => !f.live);
-      if (popularOnly) {
-        upcoming = upcoming.filter((f) => f.popularMatch);
-      }
       return {
         source,
         liveCount: live.length,
         live,
-        upcoming,
+        upcoming: [],
         note: live.length
-          ? 'Live scores from public feeds. Every country is listed — popular and other leagues — with the flag on each card.'
-          : upcoming.length
-            ? `No live games right now. ${upcoming.length} upcoming matches listed below, all countries, Popular then Other.`
-            : 'No live games right now. Upcoming matches load from TheSportsDB + OpenLigaDB — pull to refresh.',
+          ? 'Live scores only — JSON feeds, ads blocked. Grouped by league.'
+          : 'No live games right now. Pull to refresh.',
         disclaimer: BET_DISCLAIMER,
       };
     } catch (err) {
@@ -189,23 +229,61 @@ export class BetBotService {
         liveCount: 0,
         live: [],
         upcoming: [],
-        note: 'Live feed failed. Upcoming matches may still load on the Fixtures tab.',
+        note: 'Live feed failed. Pull to refresh.',
         disclaimer: BET_DISCLAIMER,
       };
     }
   }
 
+  private lookupAnalysis(id: string, llm: boolean, raw: RawEvent): FixtureAnalysis | null {
+    const suffix = llm ? 'ai' : 'fast';
+    const keys = [
+      `${id}:${suffix}`,
+      `${raw.id}:${suffix}`,
+      `${eventMatchKey(raw.homeName, raw.awayName, raw.kickoffUtc)}:${suffix}`,
+    ];
+    const now = Date.now();
+    for (const key of keys) {
+      const hit = this.analysisCache.get(key);
+      if (hit && now - hit.at < BetBotService.ANALYSIS_TTL_MS) return hit.data;
+    }
+    for (const [key, hit] of this.analysisCache) {
+      if (!key.endsWith(`:${suffix}`) || now - hit.at >= BetBotService.ANALYSIS_TTL_MS) continue;
+      const fx = hit.data.fixture;
+      if (
+        namesClose(fx.home.name, raw.homeName) &&
+        namesClose(fx.away.name, raw.awayName) &&
+        fx.kickoffUtc.slice(0, 10) === raw.kickoffUtc.slice(0, 10)
+      ) {
+        return hit.data;
+      }
+    }
+    return null;
+  }
+
+  private rememberAnalysis(id: string, llm: boolean, raw: RawEvent, data: FixtureAnalysis) {
+    const suffix = llm ? 'ai' : 'fast';
+    const at = Date.now();
+    const keys = new Set([
+      `${id}:${suffix}`,
+      `${raw.id}:${suffix}`,
+      `${data.fixture.id}:${suffix}`,
+      `${eventMatchKey(raw.homeName, raw.awayName, raw.kickoffUtc)}:${suffix}`,
+      `${eventMatchKey(data.fixture.home.name, data.fixture.away.name, data.fixture.kickoffUtc)}:${suffix}`,
+    ]);
+    for (const key of keys) this.analysisCache.set(key, { at, data });
+  }
+
   async analyze(id: string, opts?: { llm?: boolean }): Promise<FixtureAnalysis> {
-    const llm = opts?.llm !== false;
-    const cacheKey = `${id}:${llm ? 'ai' : 'fast'}`;
-    const hit = this.analysisCache.get(cacheKey);
-    if (hit && Date.now() - hit.at < 4 * 60 * 1000) return hit.data;
+    const llm = opts?.llm === true;
     let raw = await findRawEvent(id);
     if (!raw) {
       const { events } = await listRawFixtures({});
       raw = events.find((e) => e.id === id) ?? null;
     }
     if (!raw) throw new NotFoundException('Fixture not found');
+    const cached = this.lookupAnalysis(id, llm, raw);
+    if (cached) return cached;
     const summary = toFixtureSummary(raw);
 
     const [home, away, lineup] = await Promise.all([
@@ -236,22 +314,37 @@ export class BetBotService {
         'Bet9ja and SportyBet have no official odds API. Guide prices are from The Odds API when ODDS_API_KEY is set. Always confirm the price on the betting site.',
     });
     const analysis = await analyseThenPick(stats, home, away, { llm });
-    this.analysisCache.set(cacheKey, { at: Date.now(), data: analysis });
-    if (raw.id !== id) this.analysisCache.set(`${raw.id}:${llm ? 'ai' : 'fast'}`, { at: Date.now(), data: analysis });
+    this.rememberAnalysis(id, llm, raw, analysis);
     return analysis;
   }
 
-  async picks() {
-    let { items } = await this.fixtures({ popular: 'all' });
+  async picks(query: {
+    date?: string;
+    day?: string;
+    market?: string;
+    risk?: string;
+    minimumProbability?: number;
+    minimumConfidence?: number;
+  } = {}) {
+    let { items } = await this.fixtures({ popular: 'all', ...query });
     if (!items.length) {
-      const popularOnly = await this.fixtures({});
+      const popularOnly = await this.fixtures({ ...query });
       items = popularOnly.items;
     }
-    const upcoming = items.filter((f) => !f.live);
-    const slice = analysisSlice(upcoming, 96);
+    const upcoming = items;
+    const todayCount = upcoming.filter((fixture) => isOnCalendarDay(fixture.kickoffUtc)).length;
+    const featured = upcoming.filter(isRequestedTopLeague);
+    const slice = analysisSlice(
+      [...featured, ...upcoming.filter((fixture) => !featured.includes(fixture))],
+      Math.max(80, todayCount, featured.length),
+    );
     await warmOddsCatalog().catch(() => undefined);
-    const settled = await mapSettled(slice, 4, (f) => this.analyze(f.id, { llm: false }));
-    const analyzed: FixtureAnalysis[] = [];
+    const settled = await mapSettled(slice, 6, (f) => this.analyze(f.id, { llm: false }));
+    const aiWarming = openaiConfigured();
+    if (aiWarming) {
+      this.warmAiEnrichment(slice);
+    }
+    let analyzed: FixtureAnalysis[] = [];
     settled.forEach((r, i) => {
       if (r.status === 'fulfilled') analyzed.push(r.value);
       else {
@@ -260,54 +353,26 @@ export class BetBotService {
         );
       }
     });
-    const unique = diversifyRecommended(analyzed);
-    const recommendedPicks = unique
+    if (query.market || query.risk || query.minimumProbability != null || query.minimumConfidence != null) {
+      const filtered: FixtureAnalysis[] = [];
+      for (const analysis of analyzed) {
+        const markets = analysis.markets.filter((market) =>
+          (!query.market || market.market.toLowerCase() === query.market!.toLowerCase()) &&
+          (!query.risk || market.riskLevel.toLowerCase() === query.risk!.toLowerCase()) &&
+          (query.minimumProbability == null || market.modelProbability >= query.minimumProbability) &&
+          (query.minimumConfidence == null || market.confidence >= query.minimumConfidence),
+        );
+        if (!markets.length) continue;
+        const recommended = markets.find((market) => market.market === analysis.recommended?.market) ?? markets[0] ?? null;
+        filtered.push({ ...analysis, markets, recommended });
+      }
+      analyzed = filtered;
+    }
+    const recommendedPicks = analyzed.filter((a) => a.recommended).map((a) => pickFromAnalysis(a));
+    const bookingPicks = diversifyRecommended(analyzed)
       .filter((a) => a.recommended)
-      .map((a) => {
-        const pack = packFromAnalysis(a);
-        return {
-          ...a.recommended!,
-          fixtureId: a.fixture.id,
-          home: a.fixture.home.name,
-          away: a.fixture.away.name,
-          match: `${a.fixture.home.name} vs ${a.fixture.away.name}`,
-          kickoffUtc: a.fixture.kickoffUtc,
-          league: a.fixture.league,
-          country: pack.country,
-          leagueHeading: pack.leagueHeading,
-          popularMatch: a.fixture.popularMatch,
-          deliveryRate: a.recommended!.sampleDeliveryRate ?? a.recommended!.modelProbability,
-          analysedOdds: a.recommended!.analysedOdds,
-          last5Home: pack.last5Home,
-          last5Away: pack.last5Away,
-          scoresHome: pack.scoresHome,
-          scoresAway: pack.scoresAway,
-          multiScore: pack.multiScore,
-          aiSummary: a.ai?.summary,
-        };
-      });
-    const allMarkets = analyzed.flatMap((a) => {
-      const pack = packFromAnalysis(a);
-      return a.markets.map((m) => ({
-        ...m,
-        fixtureId: a.fixture.id,
-        home: a.fixture.home.name,
-        away: a.fixture.away.name,
-        match: `${a.fixture.home.name} vs ${a.fixture.away.name}`,
-        kickoffUtc: a.fixture.kickoffUtc,
-        league: a.fixture.league,
-        country: pack.country,
-        leagueHeading: pack.leagueHeading,
-        popularMatch: a.fixture.popularMatch,
-        deliveryRate: m.sampleDeliveryRate ?? m.modelProbability,
-        analysedOdds: m.analysedOdds,
-        last5Home: pack.last5Home,
-        last5Away: pack.last5Away,
-        scoresHome: pack.scoresHome,
-        scoresAway: pack.scoresAway,
-        aiSummary: a.ai?.summary,
-      }));
-    });
+      .map((a) => pickFromAnalysis(a));
+    const allMarkets = analyzed.flatMap((a) => a.markets.map((m) => pickFromAnalysis(a, m)));
     const qualified = [
       ...allMarkets.filter((m) => m.category !== 'AVOID'),
       ...recommendedPicks.filter((r) => !allMarkets.some((m) => m.fixtureId === r.fixtureId && m.market === r.market && m.category !== 'AVOID')),
@@ -318,113 +383,122 @@ export class BetBotService {
     ) =>
       (b.analysisScore ?? 0) - (a.analysisScore ?? 0) || (b.confidence ?? 0) - (a.confidence ?? 0);
     const value = qualified.filter((m) => m.category === 'BEST_VALUE').sort(byScore).slice(0, 16);
-    const avoid = analyzed
-      .filter((a) => a.avoidReasons.length > 0)
-      .map((a) => ({
-        fixtureId: a.fixture.id,
-        match: `${a.fixture.home.name} vs ${a.fixture.away.name}`,
-        reasons: a.avoidReasons,
-      }));
-    const byDayThenScore = (
+    const byScoreThenDay = (
       a: { kickoffUtc: string; analysisScore?: number; confidence?: number },
       b: { kickoffUtc: string; analysisScore?: number; confidence?: number },
-    ) => compareByMatchDay(a.kickoffUtc, b.kickoffUtc) || byScore(a, b);
-    const popularPicks = recommendedPicks.filter((p) => p.popularMatch).sort(byDayThenScore);
-    const otherPicks = recommendedPicks.filter((p) => !p.popularMatch).sort(byDayThenScore);
+    ) => byScore(a, b) || compareByMatchDay(a.kickoffUtc, b.kickoffUtc);
+    const avoidMap = new Map<
+      string,
+      {
+        fixtureId: string;
+        match: string;
+        reasons: string[];
+        country?: string;
+        countryFlag?: string;
+        league?: string;
+        leagueHeading?: string;
+      }
+    >();
+    for (const a of analyzed) {
+      const rec = a.recommended;
+      const score = rec?.analysisScore ?? rec?.safetyScore ?? 0;
+      const meaningful = a.avoidReasons.filter((r) => !/starting XI not confirmed/i.test(r));
+      const weak = !rec || rec.category === 'AVOID' || score < 70;
+      if (!meaningful.length && !weak) continue;
+      const pack = packFromAnalysis(a);
+      const reasons = [
+        ...meaningful,
+        ...(rec?.category === 'AVOID' ? [rec.reason || rec.riskLevel || 'Avoid'] : []),
+        ...(rec && score < 70 ? [`Safety ${score}% — below the 70% line`] : []),
+        ...(!rec ? ['No qualified market on this fixture'] : []),
+      ].filter(Boolean);
+      avoidMap.set(a.fixture.id, {
+        fixtureId: a.fixture.id,
+        match: `${a.fixture.home.name} vs ${a.fixture.away.name}`,
+        reasons: [...new Set(reasons)].slice(0, 4),
+        country: pack.country,
+        countryFlag: pack.countryFlag,
+        league: a.fixture.league,
+        leagueHeading: pack.leagueHeading,
+      });
+    }
+    const avoid = [...avoidMap.values()];
+    const popularPicks = recommendedPicks.filter((p) => p.popularMatch).sort(byScoreThenDay);
+    const otherPicks = recommendedPicks.filter((p) => !p.popularMatch).sort(byScoreThenDay);
     const highFromCategory = qualified.filter((m) => m.category === 'HIGH_ODDS');
-    const highFromStats = unique
+    const highFromStats = analyzed
       .map((a) => {
         const m = pickHighOddsMarket(a.markets);
         if (!m) return null;
-        const pack = packFromAnalysis(a);
-        return {
-          ...m,
-          fixtureId: a.fixture.id,
-          home: a.fixture.home.name,
-          away: a.fixture.away.name,
-          match: `${a.fixture.home.name} vs ${a.fixture.away.name}`,
-          kickoffUtc: a.fixture.kickoffUtc,
-          league: a.fixture.league,
-          country: pack.country,
-          leagueHeading: pack.leagueHeading,
-          popularMatch: a.fixture.popularMatch,
-          deliveryRate: m.sampleDeliveryRate ?? m.modelProbability,
-          analysedOdds: m.analysedOdds,
-          last5Home: pack.last5Home,
-          last5Away: pack.last5Away,
-          scoresHome: pack.scoresHome,
-          scoresAway: pack.scoresAway,
-          multiScore: pack.multiScore,
-          aiSummary: a.ai?.summary,
-        };
+        return pickFromAnalysis(a, m);
       })
       .filter((row): row is NonNullable<typeof row> => Boolean(row));
     const highOdds = (highFromStats.length ? highFromStats : highFromCategory)
       .filter((row, i, arr) => arr.findIndex((x) => x.fixtureId === row.fixtureId) === i)
-      .sort(byDayThenScore);
-    const multiScore = unique
+      .sort(byScoreThenDay);
+    const multiScore = analyzed
       .filter((a) => a.multiScore)
       .map((a) => {
         const pack = packFromAnalysis(a);
         const ms = a.multiScore!;
         return {
+          ...pickFromAnalysis(a),
           market: ms.side === 'HOME' ? ('HOME_MULTISCORE' as const) : ('AWAY_MULTISCORE' as const),
           label: ms.label,
           modelProbability: ms.combinedProbability,
           impliedProbability: null,
           edgePct: null,
-          safetyScore: a.recommended?.safetyScore ?? 60,
-          analysisScore: a.recommended?.analysisScore ?? 60,
           confidence: Math.min(ms.combinedProbability, 88),
           analysedOdds: ms.analysedOdds,
           sampleDeliveryRate: null,
           sampleSize: 0,
           historicalNote: ms.reason,
-          category: 'HIGH_ODDS',
+          category: 'HIGH_ODDS' as const,
           riskLevel: 'Value',
           reason: ms.reason,
           whyQualified: ms.scores.map((s) => `${s.line} model ${s.probability}%`),
           mainRisk: 'Multi-score is a correct-score combo. High variance — confirm the box on Bet9ja/SportyBet.',
           sources: a.sources,
           odds: { bestBook: null, bestOdds: ms.analysedOdds, books: [] },
-          fixtureId: a.fixture.id,
-          home: a.fixture.home.name,
-          away: a.fixture.away.name,
-          match: `${a.fixture.home.name} vs ${a.fixture.away.name}`,
-          kickoffUtc: a.fixture.kickoffUtc,
-          league: a.fixture.league,
-          country: pack.country,
-          leagueHeading: pack.leagueHeading,
-          popularMatch: a.fixture.popularMatch,
           deliveryRate: ms.combinedProbability,
+          multiScore: ms,
           last5Home: pack.last5Home,
           last5Away: pack.last5Away,
           scoresHome: pack.scoresHome,
           scoresAway: pack.scoresAway,
-          multiScore: ms,
-          aiSummary: a.ai?.summary,
         };
       })
-      .sort(byDayThenScore);
-    const booking = selectBookingLegs(recommendedPicks.length ? recommendedPicks : allMarkets, 8, {
-      trustInputMarkets: Boolean(recommendedPicks.length),
+      .sort(byScoreThenDay);
+    const booking = selectBookingLegs(bookingPicks.length ? bookingPicks : allMarkets, 8, {
+      trustInputMarkets: Boolean(bookingPicks.length),
     });
+    const valueFallback = [...recommendedPicks]
+      .sort((a, b) => {
+        const oa = a.analysedOdds ?? a.odds.bestOdds ?? 0;
+        const ob = b.analysedOdds ?? b.odds.bestOdds ?? 0;
+        return ob - oa || byScore(a, b);
+      })
+      .slice(0, 16);
+    const elitePool = (popularPicks.length ? popularPicks : recommendedPicks).slice().sort(byScoreThenDay);
     return {
-      safest: [...recommendedPicks].sort(byDayThenScore),
+      safest: [...recommendedPicks].sort(byScoreThenDay),
       popularPicks,
       otherPicks,
-      bestValue: value.length ? value : recommendedPicks.filter((m) => m.category === 'BEST_VALUE').sort(byDayThenScore).slice(0, 16),
+      bestValue: value.length ? value : valueFallback,
       highOdds,
       multiScore,
-      elite: popularPicks.slice(0, 16),
+      elite: elitePool.slice(0, 16),
       avoid,
       booking,
       accumulators: booking.accumulators,
       daily100: booking.daily100,
       noBet: false,
       note: recommendedPicks.length
-        ? `Every match is listed by day. Highest analysis scores are on the cards. Popular and other leagues from every country, with flags.`
+        ? aiWarming
+          ? 'Stats picks are live. AI is refining top matches in the background — pull to refresh in ~30s for upgraded scores.'
+          : 'Highest safety % is on every card. Safest tab lists the strongest picks first. You do not need to open a match to see the %.'
         : 'Waiting on fixture analysis. Pull to refresh.',
+      aiWarming,
       disclaimer: BET_DISCLAIMER,
     };
   }
@@ -432,6 +506,25 @@ export class BetBotService {
   async bookingSlip() {
     const p = await this.picks();
     return { ...p.booking, disclaimer: BET_DISCLAIMER };
+  }
+
+  /** Background ChatGPT pass — stats picks return immediately; AI upgrades cache for refresh. */
+  private warmAiEnrichment(fixtures: import('./types').FixtureSummary[]) {
+    if (!openaiConfigured() || this.aiWarmInFlight || !fixtures.length) return;
+    this.aiWarmInFlight = true;
+    const top = fixtures.slice(0, 24);
+    void (async () => {
+      try {
+        await mapSettled(top, 2, (f) => this.analyze(f.id, { llm: true }));
+        this.logger.log(`AI enrichment warmed for ${top.length} fixtures`);
+      } catch (err) {
+        this.logger.warn(
+          `AI enrichment failed: ${err instanceof Error ? err.message : 'error'}`,
+        );
+      } finally {
+        this.aiWarmInFlight = false;
+      }
+    })();
   }
 
   quoteSlip(userId: string, bookmaker: BookmakerId, selections: SlipSelection[]) {
@@ -580,37 +673,105 @@ function packFromAnalysis(a: FixtureAnalysis) {
     scoresHome: scoresLine(a.teamStats.home),
     scoresAway: scoresLine(a.teamStats.away),
     multiScore: a.multiScore,
+    cardLines: a.cardLines?.length ? a.cardLines : cardMarketLines(a),
   };
 }
 
-function analysisSlice<T extends { kickoffUtc: string; popularMatch?: boolean }>(items: T[], cap: number): T[] {
-  const ranked = [...items].sort((a, b) => {
-    const day = compareByMatchDay(a.kickoffUtc, b.kickoffUtc);
-    if (day) return day;
-    if (Boolean(a.popularMatch) !== Boolean(b.popularMatch)) {
-      return Number(Boolean(b.popularMatch)) - Number(Boolean(a.popularMatch));
-    }
-    return a.kickoffUtc.localeCompare(b.kickoffUtc);
-  });
-  if (ranked.length <= cap) return ranked;
-  const today = localDayKey();
-  const todayItems = ranked.filter((f) => localDayKey(f.kickoffUtc) === today);
-  if (todayItems.length >= cap) return todayItems.slice(0, cap);
-  return ranked.slice(0, cap);
+function isRequestedTopLeague(f: {
+  league: string;
+  country?: string;
+  topLeague?: boolean;
+}): boolean {
+  const country = (f.country || leagueCountry(f.league)).trim().toLowerCase();
+  const league = f.league.toLowerCase();
+  return (
+    f.topLeague === true &&
+    (country === 'turkey' ||
+      country === 'netherlands' ||
+      country === 'portugal' ||
+      /eredivisie|primeira liga|liga portugal|liga nos|super lig|superlig|trendyol/.test(league))
+  );
+}
+
+function pickFromAnalysis(a: FixtureAnalysis, market = a.recommended) {
+  const rec = market!;
+  const pack = packFromAnalysis(a);
+  return {
+    ...rec,
+    fixtureId: a.fixture.id,
+    home: a.fixture.home.name,
+    away: a.fixture.away.name,
+    match: `${a.fixture.home.name} vs ${a.fixture.away.name}`,
+    kickoffUtc: a.fixture.kickoffUtc,
+    league: a.fixture.league,
+    country: pack.country,
+    countryFlag: pack.countryFlag,
+    leagueHeading: pack.leagueHeading,
+    popularMatch: a.fixture.popularMatch,
+    deliveryRate: rec.sampleDeliveryRate ?? rec.modelProbability,
+    analysedOdds: rec.analysedOdds,
+    last5Home: pack.last5Home,
+    last5Away: pack.last5Away,
+    scoresHome: pack.scoresHome,
+    scoresAway: pack.scoresAway,
+    multiScore: pack.multiScore,
+    aiSummary: a.ai?.summary,
+    cardLines: pack.cardLines,
+  };
+}
+
+function analysisSlice<
+  T extends { kickoffUtc: string; popularMatch?: boolean; live?: boolean; topLeague?: boolean },
+>(items: T[], cap: number): T[] {
+  const rank = (f: T) => {
+    const today = Boolean(f.live || isOnCalendarDay(f.kickoffUtc));
+    const tomorrow = isOnCalendarDay(f.kickoffUtc, new Date(), 'tomorrow');
+    if (today && f.topLeague) return 0;
+    if (today && f.popularMatch) return 1;
+    if (today) return 2;
+    if (tomorrow && f.topLeague) return 3;
+    if (tomorrow && f.popularMatch) return 4;
+    if (tomorrow) return 5;
+    if (f.topLeague) return 6;
+    if (f.popularMatch) return 7;
+    return 8;
+  };
+  return [...items]
+    .sort(
+      (a, b) =>
+        rank(a) - rank(b) || compareByMatchDay(a.kickoffUtc, b.kickoffUtc) || a.kickoffUtc.localeCompare(b.kickoffUtc),
+    )
+    .slice(0, cap);
 }
 
 function byPopularThenLeague(
-  a: { popularMatch?: boolean; country?: string; league: string; kickoffUtc: string; live?: boolean },
-  b: { popularMatch?: boolean; country?: string; league: string; kickoffUtc: string; live?: boolean },
+  a: {
+    popularMatch?: boolean;
+    topLeague?: boolean;
+    country?: string;
+    league: string;
+    kickoffUtc: string;
+    live?: boolean;
+  },
+  b: {
+    popularMatch?: boolean;
+    topLeague?: boolean;
+    country?: string;
+    league: string;
+    kickoffUtc: string;
+    live?: boolean;
+  },
 ) {
   const day = compareByMatchDay(a.kickoffUtc, b.kickoffUtc);
   if (day) return day;
   if (Boolean(a.live) !== Boolean(b.live)) return a.live ? -1 : 1;
+  if (Boolean(a.topLeague) !== Boolean(b.topLeague)) return a.topLeague ? -1 : 1;
+  const ca = topCountryRank(a.country || leagueCountry(a.league));
+  const cb = topCountryRank(b.country || leagueCountry(b.league));
+  if (ca !== cb) return ca - cb;
   if (Boolean(a.popularMatch) !== Boolean(b.popularMatch)) {
     return Number(Boolean(b.popularMatch)) - Number(Boolean(a.popularMatch));
   }
-  const ca = (a.country || leagueCountry(a.league)).localeCompare(b.country || leagueCountry(b.league));
-  if (ca) return ca;
   const lg = a.league.localeCompare(b.league);
   if (lg) return lg;
   return a.kickoffUtc.localeCompare(b.kickoffUtc);
